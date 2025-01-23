@@ -26,4 +26,9 @@ types-python-dateutil>=2.8.19.14
 # Code Quality
 black>=24.1.0
 isort>=5.13.0
-flake8>=7.0.0 
+flake8>=7.0.0
+
+# Performance Testing
+pytest==7.4.3
+psutil==5.9.6
+memory-profiler==0.61.0 
