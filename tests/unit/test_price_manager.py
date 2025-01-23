@@ -17,7 +17,7 @@ def price_manager():
 
 @pytest.mark.asyncio
 async def test_websocket_connection(price_manager):
-    """Test WebSocket connection and subscription."""
+    """Test WebSocket connection and disconnection."""
     # Mock the websockets.connect
     mock_ws = AsyncMock()
     mock_ws.send = AsyncMock()
@@ -28,10 +28,6 @@ async def test_websocket_connection(price_manager):
         connected = await price_manager.connect()
         assert connected is True
         assert price_manager.connected is True
-        
-        # Test subscription
-        subscribed = await price_manager.subscribe()
-        assert subscribed is True
         
         # Test disconnection
         await price_manager.disconnect()
@@ -57,8 +53,9 @@ async def test_websocket_reconnection(price_manager):
         assert price_manager.connected is True
         assert price_manager.reconnection_attempts == 0  # Reset after success
 
-def test_price_callbacks(price_manager):
-    """Test price update callback system."""
+@pytest.mark.asyncio
+async def test_message_handling(price_manager):
+    """Test WebSocket message handling."""
     # Create mock callbacks
     callback1 = MagicMock()
     callback2 = MagicMock()
@@ -76,7 +73,7 @@ def test_price_callbacks(price_manager):
     }
     
     # Process message
-    asyncio.run(price_manager._handle_trade(trade_msg))
+    await price_manager._handle_message(trade_msg)
     
     # Verify callbacks were called
     callback1.assert_called_once_with(1.2345)
@@ -87,7 +84,7 @@ def test_price_callbacks(price_manager):
     
     # Test callback removal
     price_manager.remove_price_callback(callback1)
-    asyncio.run(price_manager._handle_trade(trade_msg))
+    await price_manager._handle_message(trade_msg)
     
     # callback1 should not be called again
     assert callback1.call_count == 1
@@ -96,7 +93,7 @@ def test_price_callbacks(price_manager):
 
 @pytest.mark.asyncio
 async def test_invalid_message_handling(price_manager):
-    """Test handling of invalid trade messages."""
+    """Test handling of invalid messages."""
     # Invalid message (missing price)
     invalid_msg = {
         "e": "trade",
@@ -106,7 +103,7 @@ async def test_invalid_message_handling(price_manager):
     
     # Should not raise exception but log error
     with patch('src.core.price_manager.logger.error') as mock_logger:
-        await price_manager._handle_trade(invalid_msg)
+        await price_manager._handle_message(invalid_msg)
         mock_logger.assert_called_once()
         assert price_manager.get_current_price() is None
 
@@ -128,4 +125,25 @@ def test_rest_api_fallback(price_manager):
     with patch('requests.get', side_effect=Exception("API Error")):
         price_manager.current_price = None
         price = price_manager.get_current_price()
-        assert price is None 
+        assert price is None
+
+@pytest.mark.asyncio
+async def test_listen_loop(price_manager):
+    """Test the main WebSocket listen loop."""
+    mock_ws = AsyncMock()
+    mock_messages = [
+        '{"e":"trade","p":"1.2345","q":"100"}',
+        '{"e":"trade","p":"1.2350","q":"200"}',
+        WebSocketException("Connection lost")
+    ]
+    mock_ws.__aiter__.return_value = mock_messages
+    
+    with patch('websockets.connect', return_value=mock_ws), \
+         patch('asyncio.sleep', AsyncMock()):
+        
+        # Start listening but break after processing messages
+        price_manager.should_run = False
+        await price_manager.listen()
+        
+        # Verify the last valid price was recorded
+        assert price_manager.current_price == 1.2350 
