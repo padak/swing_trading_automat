@@ -21,17 +21,23 @@
   - Added session management and error handling
   - Created initial unit tests for database operations
 
-### Phase 2: Price Management (Partial)
-- [x] WebSocket base implementation
-  - Created abstract WebSocket manager with reconnection logic
-  - Implemented exponential backoff for reconnection
-  - Added error handling and state management
-  - Integrated with system state tracking
-- [x] Market data stream
-  - Implemented Binance market data WebSocket client
-  - Added real-time price update handling
-  - Created callback system for price updates
-  - Added unit tests with mocked WebSocket
+### Phase 2: Price Management & Order Calculation
+1. ✅ Implemented base WebSocket manager for handling connections
+2. ✅ Implemented market data stream for real-time price updates
+3. ✅ Refactored to align with design doc:
+   - Integrated WebSocket functionality directly into price_manager.py
+   - Added REST API fallback for reliability
+4. ✅ Implemented profit calculator:
+   - Added minimum sell price calculation with fee handling
+   - Added order size validation
+   - Added net profit calculation
+   - Added comprehensive test coverage
+5. ✅ Added user data stream:
+   - Implemented listen key management
+   - Added order execution report handling
+   - Added account update processing
+   - Integrated with WebSocket reconnection logic
+   - Added comprehensive test coverage
 
 ## Pending Tasks
 
@@ -105,6 +111,9 @@
    - Implement order update handling
    - Add account update processing
    - Create REST API fallback system
+2. Implement order manager for handling buy/sell operations
+3. Add user data stream for order updates
+4. Implement state persistence
 
 ## Notes
 - Successfully implemented base WebSocket functionality with robust error handling
