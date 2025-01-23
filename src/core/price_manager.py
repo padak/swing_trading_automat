@@ -1,27 +1,35 @@
 """
-Market data WebSocket stream manager.
-Handles real-time price updates from Binance.
+Price manager for handling real-time price updates and WebSocket connections.
+Includes both WebSocket streaming and REST API fallback.
 """
 from typing import Optional, Dict, Any, List, Callable
+import requests
 
 from src.config.logging_config import get_logger
-from src.config.settings import TRADING_SYMBOL
+from src.config.settings import (
+    TRADING_SYMBOL,
+    REST_API_REFRESH_RATE
+)
 from .websocket_manager import WebSocketManager
 
 logger = get_logger(__name__)
 
-class MarketStreamManager(WebSocketManager):
-    """Manages WebSocket connection for market data stream."""
+class PriceManager(WebSocketManager):
+    """
+    Manages real-time price updates and WebSocket connections.
+    Includes REST API fallback for reliability.
+    """
     
     def __init__(self):
-        """Initialize the market data stream manager."""
+        """Initialize the price manager."""
         # Binance WebSocket stream URL for spot market
         symbol = TRADING_SYMBOL.lower()
         url = f"wss://stream.binance.com:9443/ws/{symbol}@trade"
-        super().__init__(url=url, name="MarketStream")
+        super().__init__(url=url, name="PriceManager")
         
         self.current_price: Optional[float] = None
         self.price_update_callbacks: List[Callable[[float], None]] = []
+        self.rest_api_url = f"https://api.binance.com/api/v3/ticker/price?symbol={TRADING_SYMBOL}"
     
     async def subscribe(self) -> bool:
         """
@@ -73,11 +81,26 @@ class MarketStreamManager(WebSocketManager):
     def get_current_price(self) -> Optional[float]:
         """
         Get the most recent price.
+        Falls back to REST API if WebSocket is not available.
         
         Returns:
             Optional[float]: Current price or None if not available
         """
-        return self.current_price
+        if self.current_price is not None:
+            return self.current_price
+        
+        # Fallback to REST API
+        try:
+            response = requests.get(self.rest_api_url)
+            response.raise_for_status()
+            data = response.json()
+            return float(data["price"])
+        except Exception as e:
+            logger.error(
+                "REST API fallback failed",
+                error=str(e)
+            )
+            return None
     
     def register_price_callback(self, callback: Callable[[float], None]) -> None:
         """
