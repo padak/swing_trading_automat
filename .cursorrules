@@ -45,7 +45,7 @@
 
 1. Modular Approach:
  - Keep distinct concerns in separate modules (e.g., database, trading logic, WebSocket listener).
- - Avoid large “God classes” or “God modules” that handle everything.
+ - Avoid large "God classes" or "God modules" that handle everything.
 
 2. Single Entry Point:
  - main.py orchestrates initialization and ties modules together.
@@ -101,7 +101,7 @@
  - Provide useful exception messages or fallback behavior.
 
 2. Logging:
- - Leverage Python’s built-in logging module.
+ - Leverage Python's built-in logging module.
  - Use log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL.
  - Configure logging in a central place (e.g., utils.py or main.py).
  - Avoid excessive print() statements for production code; rely on logs instead.
@@ -115,7 +115,7 @@
 
 1. SQLite Usage:
  - Maintain consistent schema creation in database.py.
- - Abstract queries behind methods, so other parts of the codebase don’t execute raw SQL inline.
+ - Abstract queries behind methods, so other parts of the codebase don't execute raw SQL inline.
 
 2. Data Integrity:
  - Whenever possible, handle partial fills by storing fill events or adjusting the relevant row.
@@ -129,7 +129,7 @@
 
 7. AI Interaction & Code Generation Guidelines
 
-Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set the following guidelines for the AI’s interaction:
+Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set the following guidelines for the AI's interaction:
 
 1. Context Preservation:
  - Always provide the AI with relevant context (e.g., function docstrings, module purpose) to maintain consistency.
@@ -140,7 +140,7 @@ Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set
  - Provide sample input/outputs or test cases so the AI can better align with project requirements.
 
 3. Incremental Changes:
- - Encourage incremental code changes with well-documented commits rather than massive “all-in-one” merges.
+ - Encourage incremental code changes with well-documented commits rather than massive "all-in-one" merges.
  - After AI code generation, always do a human review to ensure correctness and project compatibility.
 
 4. Compliance with Best Practices:
@@ -152,7 +152,7 @@ Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set
  - If any code snippet includes placeholders for API keys, it should be clearly marked as an example only (e.g., "YOUR_API_KEY").
 
 6. Ethical & Legal Considerations:
- - Ensure that any AI-driven approach to trading does not violate Binance’s Terms of Service or local financial regulations.
+ - Ensure that any AI-driven approach to trading does not violate Binance's Terms of Service or local financial regulations.
  - Maintain disclaimers that this is an experimental system, especially for code that could place real trades.
 
 ----
@@ -161,7 +161,7 @@ Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set
 
 1. Git Workflow:
  - Use feature branches for new functionalities, merge into dev (or main) via Pull Requests.
- - Write concise, descriptive commit messages (e.g., “Add partial fill handling to orders_manager.py”).
+ - Write concise, descriptive commit messages (e.g., "Add partial fill handling to orders_manager.py").
  - Tag releases if you do versioned deployments.
 
 2. Code Reviews:
@@ -170,7 +170,7 @@ Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set
 
 3. Continuous Integration (CI):
  - If possible, set up CI (e.g., GitHub Actions) to run lint checks, tests, and coverage reports on every push/PR.
- - Fail the build if coverage or lint thresholds aren’t met.
+ - Fail the build if coverage or lint thresholds aren't met.
 
 ----
 
@@ -185,7 +185,7 @@ Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set
 
 3. Future Roadmap:
  - Keep a clear backlog of features (e.g., AI-based trend detection, backtesting module).
- - Mark “nice-to-have” vs. “critical” tasks in your issue tracker or project board.
+ - Mark "nice-to-have" vs. "critical" tasks in your issue tracker or project board.
 
 ----
 
@@ -198,3 +198,97 @@ By following these best practices:
  - Long-term stability is supported through testing, logging, and clear version control.
 
 These guidelines should serve as a living document—feel free to amend or expand them as your project evolves.
+
+# Project Structure Rules (from PRODUCTION_DESIGN.md)
+
+## Directory Structure
+The project must follow this exact structure:
+```
+binance_swing_trading/
+├── src/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── settings.py          # App settings, constants, env loading
+│   │   └── logging_config.py    # Logging configuration
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── price_manager.py     # Price updates (WebSocket + REST fallback)
+│   │   ├── order_manager.py     # Order operations
+│   │   ├── profit_calculator.py # Profit calculations with fees
+│   │   └── state_manager.py     # System state management
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── models.py           # SQLite table definitions
+│   │   └── operations.py       # DB operations
+│   └── utils/
+│       ├── __init__.py
+│       └── helpers.py          # Utility functions
+├── tools/
+│   └── manage_positions.py     # CLI utility for manual position management
+├── tests/
+│   ├── __init__.py
+│   ├── test_price_manager.py
+│   ├── test_order_manager.py
+│   ├── test_profit_calculator.py
+│   └── test_state_manager.py
+├── data/
+│   ├── trading.db             # SQLite database
+│   └── logs/
+│       ├── trading.log        # Main rotating log file
+│       └── error.log          # Separate error log stream
+```
+
+## File Naming Rules
+1. All Python files must use snake_case naming
+2. Test files must prefix the module name with "test_"
+3. No additional files should be created without updating PRODUCTION_DESIGN.md first
+
+## Module Responsibilities
+1. price_manager.py:
+   - Handle WebSocket connections for price updates
+   - Provide REST API fallback
+   - Maintain current price state
+   - Broadcast price updates
+
+2. order_manager.py:
+   - Monitor BUY orders
+   - Place SELL orders
+   - Handle partial fills
+   - Track position duration
+
+3. profit_calculator.py:
+   - Calculate minimum sell prices
+   - Account for all fees
+   - Validate order sizes
+
+4. state_manager.py:
+   - Manage system state persistence
+   - Handle graceful shutdowns
+   - Recover from saved state
+   - Track position duration
+
+5. models.py:
+   - Define SQLite table schemas
+   - Define relationships between models
+   - No business logic
+
+6. operations.py:
+   - Implement database CRUD operations
+   - Handle transactions
+   - Manage session lifecycle
+
+## Coding Standards
+1. All functions must have type hints
+2. All functions must have docstrings
+3. Use structured logging with JSON format
+4. Handle all exceptions gracefully
+5. Update system state for important events
+6. Include unit tests for all functionality
+
+## Implementation Rules
+1. No automatic liquidation of positions
+2. Each BUY order (including partials) handled independently
+3. SELL orders remain active indefinitely
+4. Manual intervention only through manage_positions.py
+5. Always maintain state in SQLite database
+6. Use WebSocket with REST fallback for reliability
