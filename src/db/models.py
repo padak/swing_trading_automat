@@ -2,6 +2,7 @@
 SQLAlchemy models for the trading system database.
 """
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from sqlalchemy import (
@@ -14,6 +15,24 @@ from sqlalchemy.orm import (
 )
 
 from src.config.settings import DB_PATH
+
+class OrderStatus(str, Enum):
+    """Enum for order statuses."""
+    OPEN = "OPEN"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+class SystemStatus(str, Enum):
+    """Enum for system statuses."""
+    RUNNING = "RUNNING"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
+    RECONNECTING = "RECONNECTING"
+    INITIALIZING = "INITIALIZING"
+    MAINTENANCE = "MAINTENANCE"
 
 # Create the SQLAlchemy base class
 class Base(DeclarativeBase):

@@ -14,6 +14,8 @@ load_dotenv()
 # API Configuration
 BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
+BINANCE_API_URL: str = os.getenv("BINANCE_API_URL", "https://api.binance.com")
+BINANCE_STREAM_URL: str = os.getenv("BINANCE_STREAM_URL", "wss://stream.binance.com:9443")
 TRADING_SYMBOL: str = os.getenv("TRADING_SYMBOL", "TRUMPUSDC")
 
 # Trading Parameters
@@ -30,7 +32,18 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 # WebSocket Configuration
 WEBSOCKET_RECONNECT_TIMEOUT: int = int(os.getenv("WEBSOCKET_RECONNECT_TIMEOUT", "900"))
 WEBSOCKET_INITIAL_RETRY_DELAY: int = int(os.getenv("WEBSOCKET_INITIAL_RETRY_DELAY", "1"))
+WEBSOCKET_RECONNECT_DELAY: int = int(os.getenv("WEBSOCKET_RECONNECT_DELAY", "5"))
+WEBSOCKET_MAX_RETRIES: int = int(os.getenv("WEBSOCKET_MAX_RETRIES", "3"))
+MAX_RECONNECTION_ATTEMPTS: int = int(os.getenv("MAX_RECONNECTION_ATTEMPTS", "5"))
+WEBSOCKET_PING_INTERVAL: int = int(os.getenv("WEBSOCKET_PING_INTERVAL", "30"))
+WEBSOCKET_PING_TIMEOUT: int = int(os.getenv("WEBSOCKET_PING_TIMEOUT", "10"))
 REST_API_REFRESH_RATE: int = int(os.getenv("REST_API_REFRESH_RATE", "5"))
+
+# Performance Settings
+MAX_ORDER_PROCESSING_TIME: float = float(os.getenv("MAX_ORDER_PROCESSING_TIME", "0.5"))  # seconds
+MAX_PRICE_UPDATE_LATENCY: float = float(os.getenv("MAX_PRICE_UPDATE_LATENCY", "0.1"))  # seconds
+MAX_STATE_RECOVERY_TIME: float = float(os.getenv("MAX_STATE_RECOVERY_TIME", "1.0"))  # seconds
+CONCURRENT_UPDATES_THRESHOLD: int = int(os.getenv("CONCURRENT_UPDATES_THRESHOLD", "100"))
 
 # Logging Configuration
 LOG_ROTATION_SIZE_MB: int = int(os.getenv("LOG_ROTATION_SIZE_MB", "100"))
@@ -54,6 +67,33 @@ def validate_config() -> Optional[str]:
     
     if POSITION_AGE_ALERT_HOURS <= 0:
         return "POSITION_AGE_ALERT_HOURS must be greater than 0"
+    
+    if WEBSOCKET_RECONNECT_DELAY <= 0:
+        return "WEBSOCKET_RECONNECT_DELAY must be greater than 0"
+    
+    if WEBSOCKET_MAX_RETRIES <= 0:
+        return "WEBSOCKET_MAX_RETRIES must be greater than 0"
+    
+    if MAX_RECONNECTION_ATTEMPTS <= 0:
+        return "MAX_RECONNECTION_ATTEMPTS must be greater than 0"
+    
+    if WEBSOCKET_PING_INTERVAL <= 0:
+        return "WEBSOCKET_PING_INTERVAL must be greater than 0"
+    
+    if WEBSOCKET_PING_TIMEOUT <= 0:
+        return "WEBSOCKET_PING_TIMEOUT must be greater than 0"
+    
+    if MAX_ORDER_PROCESSING_TIME <= 0:
+        return "MAX_ORDER_PROCESSING_TIME must be greater than 0"
+    
+    if MAX_PRICE_UPDATE_LATENCY <= 0:
+        return "MAX_PRICE_UPDATE_LATENCY must be greater than 0"
+    
+    if MAX_STATE_RECOVERY_TIME <= 0:
+        return "MAX_STATE_RECOVERY_TIME must be greater than 0"
+    
+    if CONCURRENT_UPDATES_THRESHOLD <= 0:
+        return "CONCURRENT_UPDATES_THRESHOLD must be greater than 0"
     
     # Create necessary directories if they don't exist
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

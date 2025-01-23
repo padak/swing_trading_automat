@@ -4,7 +4,7 @@ Provides CRUD operations and session management.
 """
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Generator, Optional, List
+from typing import Generator, Optional, List, Dict, Any
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -68,6 +68,32 @@ def get_order_by_id(db: Session, order_id: int) -> Optional[Order]:
 def get_order_by_binance_id(db: Session, binance_id: str) -> Optional[Order]:
     """Get an order by its Binance order ID."""
     return db.scalar(select(Order).where(Order.binance_order_id == binance_id))
+
+def update_order(
+    db: Session,
+    order_id: int,
+    update_data: Dict[str, Any]
+) -> Optional[Order]:
+    """
+    Update an order with the provided data.
+    
+    Args:
+        db (Session): Database session
+        order_id (int): ID of the order to update
+        update_data (Dict[str, Any]): Dictionary of fields to update and their values
+        
+    Returns:
+        Optional[Order]: Updated order if found, None otherwise
+    """
+    order = get_order_by_id(db, order_id)
+    if order:
+        for field, value in update_data.items():
+            if hasattr(order, field):
+                setattr(order, field, value)
+                if field == "status" and value == "FILLED":
+                    order.fill_time = datetime.utcnow()
+        logger.info("Updated order", order_id=order_id, fields=list(update_data.keys()))
+    return order
 
 def update_order_status(
     db: Session,

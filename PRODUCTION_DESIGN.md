@@ -129,6 +129,55 @@ binance_swing_trading/
 └── README.md                 # Project documentation
 ```
 
+### 1.1 Package Setup
+```bash
+# Install in development mode
+pip install -e .
+
+# Project structure as Python package
+swing_trading_automat/
+├── setup.py              # Package installation configuration
+├── pyproject.toml       # Build system requirements
+└── src/                 # Source code as installable package
+    └── swing_trading_automat/
+        ├── __init__.py
+        └── [module directories...]
+```
+
+### 1.2 Dependencies
+Required Python packages:
+```
+# API Client
+python-binance>=1.0.19    # Binance API interactions
+
+# Database
+SQLAlchemy>=2.0.0        # Database ORM
+
+# WebSocket (both required)
+websockets>=12.0         # Async WebSocket client for market data
+websocket-client>=1.7.0  # WebSocket client for user data stream
+
+# Environment & Configuration
+python-dotenv>=1.0.0     # Environment variable management
+
+# Logging
+structlog>=24.1.0        # Structured logging
+
+# Testing & Quality
+pytest>=8.0.0           # Testing framework
+pytest-asyncio>=0.23.0  # Async test support
+pytest-mock>=3.12.0     # Mocking support
+pytest-cov>=4.1.0       # Coverage reporting
+mypy>=1.8.0            # Type checking
+black>=24.1.0          # Code formatting
+isort>=5.13.0          # Import sorting
+flake8>=7.0.0          # Code linting
+
+# Performance Testing
+psutil>=5.9.6          # System resource monitoring
+memory-profiler>=0.61.0 # Memory profiling
+```
+
 ## 2. Core Components
 
 ### 2.1 Price Manager (price_manager.py)
@@ -329,6 +378,8 @@ CREATE TABLE system_state (
 # API Configuration
 BINANCE_API_KEY=your_api_key
 BINANCE_API_SECRET=your_api_secret
+BINANCE_API_URL=https://api.binance.com
+BINANCE_STREAM_URL=wss://stream.binance.com:9443
 TRADING_SYMBOL=TRUMPUSDC
 
 # Trading Parameters
@@ -343,16 +394,35 @@ ERROR_LOG_PATH=data/logs/error.log
 LOG_LEVEL=INFO
 
 # WebSocket Configuration
-WEBSOCKET_RECONNECT_TIMEOUT=900  # 15 minutes in seconds
-WEBSOCKET_INITIAL_RETRY_DELAY=1  # Initial retry delay in seconds
-REST_API_REFRESH_RATE=5  # seconds
+WEBSOCKET_RECONNECT_TIMEOUT=900       # 15 minutes in seconds
+WEBSOCKET_INITIAL_RETRY_DELAY=1       # Initial retry delay in seconds
+WEBSOCKET_RECONNECT_DELAY=5           # Delay between reconnection attempts
+WEBSOCKET_MAX_RETRIES=3              # Maximum retry attempts per session
+MAX_RECONNECTION_ATTEMPTS=5          # Total reconnection attempts allowed
+WEBSOCKET_PING_INTERVAL=30           # Keep-alive ping interval
+WEBSOCKET_PING_TIMEOUT=10            # Ping response timeout
+REST_API_REFRESH_RATE=5              # Fallback API refresh rate
+
+# Performance Settings
+MAX_ORDER_PROCESSING_TIME=0.5        # Maximum time for order processing (seconds)
+MAX_PRICE_UPDATE_LATENCY=0.1        # Maximum price update delay (seconds)
+MAX_STATE_RECOVERY_TIME=1.0         # Maximum time for state recovery (seconds)
+CONCURRENT_UPDATES_THRESHOLD=100     # Maximum concurrent updates
 
 # Logging Configuration
 LOG_ROTATION_SIZE_MB=100
 LOG_BACKUP_COUNT=5
 ```
 
-### 4.2 Logging Configuration
+### 4.2 Configuration Validation
+The system validates all configuration parameters on startup:
+- API credentials presence
+- Positive numeric values
+- Directory existence and permissions
+- WebSocket timeouts and retry settings
+- Performance thresholds
+
+### 4.3 Logging Configuration
 Using Python's RotatingFileHandler:
 - Main log file:
   - Maximum file size: 100 MB
