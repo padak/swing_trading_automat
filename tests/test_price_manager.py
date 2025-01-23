@@ -151,3 +151,146 @@ def test_error_handling(price_manager):
     error = Exception("Test error")
     price_manager._handle_error(None, error)
     # No assertions needed - just verify no exceptions are raised 
+
+# Performance Tests
+@pytest.mark.performance
+class TestPriceManagerPerformance:
+    """Performance tests for PriceManager."""
+    
+    @pytest.fixture
+    def price_manager_perf(self):
+        """Create a price manager instance for performance testing."""
+        manager = PriceManager(TRADING_SYMBOL)
+        yield manager
+        manager.stop()
+
+    def test_websocket_message_throughput(self, price_manager_perf, benchmark):
+        """Test WebSocket message processing throughput."""
+        mock_callback = Mock()
+        price_manager_perf.register_price_callback("test", mock_callback)
+        
+        def process_messages():
+            """Process 1000 price update messages."""
+            message = json.dumps({
+                "e": "trade",
+                "p": "1.2345"
+            })
+            for _ in range(1000):
+                price_manager_perf._handle_market_message(None, message)
+        
+        # Benchmark processing 1000 messages
+        benchmark(process_messages)
+        assert mock_callback.call_count == 1000
+
+    def test_price_update_latency(self, price_manager_perf):
+        """Test latency of price update processing."""
+        import time
+        latencies = []
+        mock_callback = Mock()
+        price_manager_perf.register_price_callback("test", mock_callback)
+        
+        message = json.dumps({
+            "e": "trade",
+            "p": "1.2345"
+        })
+        
+        # Measure latency for 100 price updates
+        for _ in range(100):
+            start_time = time.perf_counter()
+            price_manager_perf._handle_market_message(None, message)
+            end_time = time.perf_counter()
+            latencies.append((end_time - start_time) * 1000)  # Convert to milliseconds
+        
+        avg_latency = sum(latencies) / len(latencies)
+        max_latency = max(latencies)
+        
+        # Assert reasonable latency bounds (adjust based on requirements)
+        assert avg_latency < 1.0, f"Average latency {avg_latency}ms exceeds 1ms threshold"
+        assert max_latency < 5.0, f"Maximum latency {max_latency}ms exceeds 5ms threshold"
+
+    def test_concurrent_stream_performance(self, price_manager_perf):
+        """Test performance with concurrent market and user data streams."""
+        import threading
+        import time
+        
+        market_processed = 0
+        user_processed = 0
+        lock = threading.Lock()
+        
+        def market_callback(price):
+            nonlocal market_processed
+            with lock:
+                market_processed += 1
+        
+        def user_callback(data):
+            nonlocal user_processed
+            with lock:
+                user_processed += 1
+        
+        price_manager_perf.register_price_callback("test_market", market_callback)
+        price_manager_perf.register_order_callback("test_user", user_callback)
+        
+        market_message = json.dumps({
+            "e": "trade",
+            "p": "1.2345"
+        })
+        
+        user_message = json.dumps({
+            "e": "executionReport",
+            "i": 12345,
+            "X": "FILLED",
+            "l": "100",
+            "L": "1.2345"
+        })
+        
+        def process_market():
+            for _ in range(500):
+                price_manager_perf._handle_market_message(None, market_message)
+                time.sleep(0.001)  # Simulate realistic message arrival
+        
+        def process_user():
+            for _ in range(500):
+                price_manager_perf._handle_user_message(None, user_message)
+                time.sleep(0.001)  # Simulate realistic message arrival
+        
+        # Start concurrent processing
+        market_thread = threading.Thread(target=process_market)
+        user_thread = threading.Thread(target=process_user)
+        
+        start_time = time.perf_counter()
+        market_thread.start()
+        user_thread.start()
+        market_thread.join()
+        user_thread.join()
+        end_time = time.perf_counter()
+        
+        total_time = end_time - start_time
+        
+        # Verify all messages were processed
+        assert market_processed == 500, f"Only processed {market_processed}/500 market messages"
+        assert user_processed == 500, f"Only processed {user_processed}/500 user messages"
+        
+        # Assert reasonable processing time (adjust based on requirements)
+        assert total_time < 2.0, f"Concurrent processing took {total_time}s, exceeding 2s threshold"
+
+    def test_reconnection_performance(self, price_manager_perf):
+        """Test performance of WebSocket reconnection."""
+        import time
+        
+        reconnection_times = []
+        
+        for _ in range(5):
+            start_time = time.perf_counter()
+            price_manager_perf._handle_reconnection()
+            end_time = time.perf_counter()
+            reconnection_times.append(end_time - start_time)
+            
+            # Reset for next attempt
+            price_manager_perf.reconnection_attempts = 0
+        
+        avg_reconnect_time = sum(reconnection_times) / len(reconnection_times)
+        max_reconnect_time = max(reconnection_times)
+        
+        # Assert reasonable reconnection times (adjust based on requirements)
+        assert avg_reconnect_time < 0.1, f"Average reconnection time {avg_reconnect_time}s exceeds 100ms threshold"
+        assert max_reconnect_time < 0.5, f"Maximum reconnection time {max_reconnect_time}s exceeds 500ms threshold" 

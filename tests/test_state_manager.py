@@ -358,3 +358,164 @@ def test_integration_error_handling(trading_system, mock_binance):
     
     # Verify system remains operational
     assert state_manager.get_system_summary()['status'] == SystemStatus.DEGRADED.value 
+
+# Performance Tests
+@pytest.mark.performance
+class TestStateManagerPerformance:
+    """Performance tests for state manager."""
+    
+    @pytest.fixture
+    def state_manager_perf(self, mock_price_manager, mock_order_manager):
+        """Create a state manager instance for performance testing."""
+        manager = StateManager(mock_price_manager, mock_order_manager)
+        yield manager
+        manager.stop()
+
+    def test_state_monitoring_throughput(self, state_manager_perf, mock_db_session, benchmark):
+        """Test throughput of state monitoring operations."""
+        with patch('src.core.state_manager.get_db') as mock_get_db, \
+             patch('src.core.state_manager.update_system_state') as mock_update_state, \
+             patch('src.core.state_manager.get_open_orders') as mock_get_orders:
+            
+            # Mock database
+            mock_get_db.return_value.__enter__.return_value = mock_db_session
+            mock_get_orders.return_value = []
+            
+            def monitor_states():
+                """Monitor system state 1000 times."""
+                for _ in range(1000):
+                    state_manager_perf._monitor_state()
+            
+            # Benchmark 1000 state monitoring cycles
+            benchmark(monitor_states)
+            assert mock_update_state.call_count == 1000
+
+    def test_state_recovery_performance(self, state_manager_perf, mock_db_session):
+        """Test performance of state recovery with large order history."""
+        with patch('src.core.state_manager.get_db') as mock_get_db, \
+             patch('src.core.state_manager.get_system_state') as mock_get_state, \
+             patch('src.core.state_manager.get_open_orders') as mock_get_orders, \
+             patch('src.core.state_manager.update_system_state') as mock_update_state:
+            
+            # Mock database
+            mock_get_db.return_value.__enter__.return_value = mock_db_session
+            mock_get_state.return_value = SystemState(
+                status=SystemStatus.TRADING,
+                websocket_status="CONNECTED",
+                last_state_check=datetime.utcnow()
+            )
+            
+            # Create 1000 test orders
+            mock_orders = [
+                Order(
+                    order_id=str(i),
+                    symbol=TRADING_SYMBOL,
+                    side='BUY',
+                    quantity=100.0,
+                    price=1.0,
+                    status=OrderStatus.FILLED
+                ) for i in range(1000)
+            ]
+            mock_get_orders.return_value = mock_orders
+            
+            # Measure recovery time
+            start_time = datetime.utcnow()
+            state_manager_perf._recover_state()
+            end_time = datetime.utcnow()
+            
+            recovery_time = (end_time - start_time).total_seconds()
+            
+            # Assert reasonable recovery time (adjust based on requirements)
+            assert recovery_time < 1.0, f"State recovery took {recovery_time}s, exceeding 1s threshold"
+
+    def test_system_summary_performance(self, state_manager_perf, mock_db_session, benchmark):
+        """Test performance of system summary generation with large dataset."""
+        with patch('src.core.state_manager.get_db') as mock_get_db, \
+             patch('src.core.state_manager.get_open_orders') as mock_get_orders:
+            
+            # Mock database
+            mock_get_db.return_value.__enter__.return_value = mock_db_session
+            
+            # Create 1000 test positions
+            positions = [
+                {
+                    'order_id': str(i),
+                    'symbol': TRADING_SYMBOL,
+                    'quantity': 100.0,
+                    'price': 1.0,
+                    'status': OrderStatus.FILLED.value,
+                    'duration_seconds': i * 100
+                } for i in range(1000)
+            ]
+            state_manager_perf.order_manager.get_open_positions.return_value = positions
+            mock_get_orders.return_value = []
+            
+            def generate_summaries():
+                """Generate system summary 100 times."""
+                for _ in range(100):
+                    state_manager_perf.get_system_summary()
+            
+            # Benchmark 100 summary generations
+            benchmark(generate_summaries)
+
+    def test_concurrent_state_updates(self, state_manager_perf, mock_db_session):
+        """Test performance with concurrent state updates."""
+        import threading
+        import time
+        
+        updates_completed = 0
+        errors_detected = 0
+        lock = threading.Lock()
+        
+        with patch('src.core.state_manager.get_db') as mock_get_db, \
+             patch('src.core.state_manager.update_system_state') as mock_update_state, \
+             patch('src.core.state_manager.get_open_orders') as mock_get_orders:
+            
+            # Mock database
+            mock_get_db.return_value.__enter__.return_value = mock_db_session
+            mock_get_orders.return_value = []
+            
+            def update_state():
+                """Update system state in a loop."""
+                nonlocal updates_completed, errors_detected
+                try:
+                    for _ in range(250):  # 250 updates per thread
+                        state_manager_perf._monitor_state()
+                        with lock:
+                            updates_completed += 1
+                        time.sleep(0.001)  # Simulate realistic update timing
+                except Exception:
+                    with lock:
+                        errors_detected += 1
+            
+            # Start concurrent updates with 4 threads
+            threads = [threading.Thread(target=update_state) for _ in range(4)]
+            
+            start_time = time.perf_counter()
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            end_time = time.perf_counter()
+            
+            total_time = end_time - start_time
+            
+            # Verify all updates completed successfully
+            assert updates_completed == 1000, \
+                f"Only completed {updates_completed}/1000 updates"
+            assert errors_detected == 0, \
+                f"Detected {errors_detected} update errors"
+            
+            # Assert reasonable processing time (adjust based on requirements)
+            assert total_time < 2.0, \
+                f"Concurrent updates took {total_time}s, exceeding 2s threshold"
+
+    def test_health_check_performance(self, state_manager_perf, benchmark):
+        """Test performance of health check operations."""
+        def check_health():
+            """Perform 10000 health checks."""
+            for _ in range(10000):
+                state_manager_perf.is_healthy()
+        
+        # Benchmark 10000 health checks
+        benchmark(check_health) 
