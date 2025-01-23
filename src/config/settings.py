@@ -9,7 +9,10 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+env_path = Path('.env')
+if not env_path.exists():
+    raise FileNotFoundError("The .env file is required but was not found. Please copy .env.example to .env and update the values.")
+load_dotenv(dotenv_path=env_path)
 
 # API Configuration
 BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
@@ -21,6 +24,7 @@ TRADING_SYMBOL: str = os.getenv("TRADING_SYMBOL", "TRUMPUSDC")
 # Trading Parameters
 MIN_PROFIT_PERCENTAGE: float = float(os.getenv("MIN_PROFIT_PERCENTAGE", "0.3"))
 MAX_SELL_VALUE_USDC: float = float(os.getenv("MAX_SELL_VALUE_USDC", "100"))
+MAX_ORDER_USDC: float = float(os.getenv("MAX_ORDER_USDC", "100"))  # Maximum order size in USDC
 POSITION_AGE_ALERT_HOURS: int = int(os.getenv("POSITION_AGE_ALERT_HOURS", "10"))
 
 # System Configuration
@@ -38,6 +42,7 @@ MAX_RECONNECTION_ATTEMPTS: int = int(os.getenv("MAX_RECONNECTION_ATTEMPTS", "5")
 WEBSOCKET_PING_INTERVAL: int = int(os.getenv("WEBSOCKET_PING_INTERVAL", "30"))
 WEBSOCKET_PING_TIMEOUT: int = int(os.getenv("WEBSOCKET_PING_TIMEOUT", "10"))
 REST_API_REFRESH_RATE: int = int(os.getenv("REST_API_REFRESH_RATE", "5"))
+LISTEN_KEY_KEEP_ALIVE_INTERVAL: int = int(os.getenv("LISTEN_KEY_KEEP_ALIVE_INTERVAL", "1800"))  # 30 minutes in seconds
 
 # Performance Settings
 MAX_ORDER_PROCESSING_TIME: float = float(os.getenv("MAX_ORDER_PROCESSING_TIME", "0.5"))  # seconds
