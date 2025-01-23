@@ -38,6 +38,12 @@
    - Added account update processing
    - Integrated with WebSocket reconnection logic
    - Added comprehensive test coverage
+6. ✅ Implemented order manager:
+   - Added order placement (BUY/SELL)
+   - Added partial fill handling
+   - Added position duration tracking
+   - Added order status updates
+   - Added comprehensive test coverage
 
 ## Pending Tasks
 
@@ -114,6 +120,7 @@
 2. Implement order manager for handling buy/sell operations
 3. Add user data stream for order updates
 4. Implement state persistence
+5. Add CLI utility for manual position management
 
 ## Notes
 - Successfully implemented base WebSocket functionality with robust error handling
