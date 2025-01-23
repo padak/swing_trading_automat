@@ -1,33 +1,32 @@
-# Swing Trading Automat
+# Binance Swing Trading Automation
 
-An automated trading system designed for swing trading strategies, focusing on cryptocurrency markets.
-
-## Overview
-
-This project implements an automated trading system that:
-- Monitors cryptocurrency markets for swing trading opportunities
-- Executes trades based on predefined strategies and signals
-- Manages risk through position sizing and stop-loss orders
-- Tracks and logs trading performance
+An automated trading system for swing trading on Binance, focusing on managing SELL orders for existing BUY positions.
 
 ## Features
 
-- Real-time market data monitoring
-- Automated trade execution
-- Position management
-- Risk management
-- Performance tracking
-- Logging and reporting
+- Real-time price monitoring via WebSocket with REST API fallback
+- Automated SELL order placement with configurable profit targets
+- Independent handling of partial fills
+- Position duration tracking and alerts
+- Comprehensive order validation and state management
+- Persistent state storage with SQLite
+- Robust error handling and recovery
 
-## Installation
+## Requirements
+
+- Python 3.8+
+- Binance API credentials
+- SQLite3
+
+## Quick Start
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/padak/swing_trading_automat.git
+git clone https://github.com/yourusername/swing_trading_automat.git
 cd swing_trading_automat
 ```
 
-2. Create and activate a virtual environment:
+2. Create and activate virtual environment:
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -35,31 +34,71 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install dependencies:
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-4. Set up environment variables:
+4. Configure environment:
 ```bash
 cp .env.example .env
-# Edit .env with your API keys and configuration
+# Edit .env with your Binance API credentials and preferences
 ```
 
-## Usage
+5. Run the application:
+```bash
+python main.py
+```
 
-[Usage instructions will be added as the project develops]
+## Documentation
+
+- [User Guide](docs/user_guide/README.md) - Detailed usage instructions
+- [API Documentation](docs/api/README.md) - Internal API reference
+- [Deployment Guide](docs/deployment/README.md) - Production deployment instructions
+- [Design Documentation](PRODUCTION_DESIGN.md) - System architecture and design
+
+## Project Structure
+
+```
+binance_swing_trading/
+├── src/                    # Source code
+│   ├── config/            # Configuration management
+│   ├── core/              # Core trading logic
+│   ├── db/               # Database operations
+│   └── utils/            # Utility functions
+├── tools/                 # CLI utilities
+├── tests/                # Test suite
+├── docs/                 # Documentation
+│   ├── user_guide/      # User documentation
+│   ├── api/             # API documentation
+│   └── deployment/      # Deployment guides
+└── data/                 # Data directory
+    ├── trading.db       # SQLite database
+    └── logs/            # Log files
+```
 
 ## Configuration
 
-[Configuration details will be added as the project develops]
+Key configuration parameters in `.env`:
+
+- `BINANCE_API_KEY` - Your Binance API key
+- `BINANCE_API_SECRET` - Your Binance API secret
+- `TRADING_SYMBOL` - Trading pair (e.g., TRUMPUSDC)
+- `MIN_PROFIT_PERCENTAGE` - Minimum profit target (default: 0.3%)
+- `MAX_SELL_VALUE_USDC` - Maximum order size in USDC
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
 
 ## License
 
-[License information to be added]
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Disclaimer
+## Acknowledgments
 
-This software is for educational purposes only. Use it at your own risk. The creators and contributors are not responsible for any financial losses incurred through the use of this software. 
+- Binance API documentation
+- Python-Binance library
+- SQLAlchemy ORM 

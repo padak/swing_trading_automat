@@ -114,10 +114,15 @@ binance_swing_trading/
 │   └── manage_positions.py     # CLI utility for manual position management
 ├── tests/
 │   ├── __init__.py
+│   ├── test_db_operations.py    # Database operations tests
 │   ├── test_price_manager.py
 │   ├── test_order_manager.py
 │   ├── test_profit_calculator.py
 │   └── test_state_manager.py
+├── docs/                       # Documentation directory
+│   ├── user_guide/            # Installation and usage instructions
+│   ├── api/                   # Internal API reference
+│   └── deployment/            # Production deployment guides
 ├── data/
 │   ├── trading.db             # SQLite database
 │   └── logs/
@@ -125,7 +130,8 @@ binance_swing_trading/
 │       └── error.log          # Separate error log stream
 ├── .env.example               # Template for environment variables
 ├── requirements.txt           # Project dependencies
-├── main.py                   # Entry point
+├── setup.py                   # Package installation config
+├── main.py                    # Entry point
 └── README.md                 # Project documentation
 ```
 

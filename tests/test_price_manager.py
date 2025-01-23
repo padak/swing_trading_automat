@@ -1,11 +1,20 @@
 """Unit tests for price manager module."""
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 import pytest
 import websocket
+import time
+from datetime import datetime, timedelta
+import threading
 
 from src.core.price_manager import PriceManager
-from src.config.settings import TRADING_SYMBOL
+from src.config.settings import (
+    TRADING_SYMBOL,
+    WEBSOCKET_RECONNECT_TIMEOUT,
+    WEBSOCKET_INITIAL_RETRY_DELAY,
+    REST_API_REFRESH_RATE
+)
+from src.db.models import SystemStatus
 
 @pytest.fixture
 def price_manager():
@@ -152,6 +161,165 @@ def test_error_handling(price_manager):
     price_manager._handle_error(None, error)
     # No assertions needed - just verify no exceptions are raised 
 
+def test_listen_key_keep_alive_loop(price_manager):
+    """Test the automatic listen key keep-alive loop."""
+    with patch('time.sleep'), \
+         patch.object(price_manager, '_keep_listen_key_alive') as mock_keep_alive:
+        
+        price_manager.listen_key = 'test_key'
+        price_manager.should_run = True
+        
+        # Start keep-alive thread
+        thread = threading.Thread(target=price_manager._keep_listen_key_alive_loop)
+        thread.daemon = True
+        thread.start()
+        
+        # Let it run for a bit
+        time.sleep(0.1)
+        price_manager.should_run = False
+        thread.join(timeout=1.0)
+        
+        # Verify keep-alive was called
+        assert mock_keep_alive.called
+        assert price_manager.listen_key_last_update is not None
+
+def test_execution_report_validation(price_manager):
+    """Test validation of execution report fields."""
+    # Missing required fields
+    invalid_report = {
+        'e': 'executionReport',
+        'i': '12345'  # Missing other required fields
+    }
+    price_manager._handle_execution_report(invalid_report)
+    
+    # Invalid quantities
+    invalid_quantities = {
+        'e': 'executionReport',
+        'i': '12345',
+        'X': 'FILLED',
+        'q': '100.0',  # Original quantity
+        'z': '150.0',  # Filled > Original (invalid)
+        'p': '1.2345',
+        'l': '50.0',
+        'L': '1.2345'
+    }
+    price_manager._handle_execution_report(invalid_quantities)
+    
+    # Invalid status
+    invalid_status = {
+        'e': 'executionReport',
+        'i': '12345',
+        'X': 'INVALID_STATUS',
+        'q': '100.0',
+        'z': '50.0',
+        'p': '1.2345',
+        'l': '50.0',
+        'L': '1.2345'
+    }
+    price_manager._handle_execution_report(invalid_status)
+    
+    # Valid report with commission
+    mock_callback = Mock()
+    price_manager.register_order_callback('test', mock_callback)
+    
+    valid_report = {
+        'e': 'executionReport',
+        'i': '12345',
+        'X': 'FILLED',
+        'q': '100.0',
+        'z': '100.0',
+        'p': '1.2345',
+        'l': '50.0',
+        'L': '1.2345',
+        'n': '0.1',    # Commission amount
+        'N': 'TRUMP'   # Commission asset
+    }
+    price_manager._handle_execution_report(valid_report)
+    
+    # Verify callback was called with correct data
+    mock_callback.assert_called_once()
+    call_args = mock_callback.call_args[0][0]
+    assert call_args['order_id'] == '12345'
+    assert call_args['status'] == 'FILLED'
+    assert call_args['commission'] == 0.1
+    assert call_args['commission_asset'] == 'TRUMP'
+
+def test_account_update_validation(price_manager):
+    """Test validation of account update messages."""
+    # Missing balances
+    invalid_update = {
+        'e': 'outboundAccountPosition'
+        # Missing 'B' field
+    }
+    price_manager._handle_account_update(invalid_update)
+    
+    # Invalid balance data
+    invalid_balance = {
+        'e': 'outboundAccountPosition',
+        'B': [
+            {
+                'a': 'TRUMP'
+                # Missing 'f' and 'l' fields
+            }
+        ]
+    }
+    price_manager._handle_account_update(invalid_balance)
+    
+    # Valid balance update
+    valid_update = {
+        'e': 'outboundAccountPosition',
+        'E': 1234567890000,
+        'B': [
+            {
+                'a': 'TRUMP',
+                'f': '100.0',
+                'l': '50.0'
+            },
+            {
+                'a': 'USDC',
+                'f': '1000.0',
+                'l': '0.0'
+            }
+        ]
+    }
+    price_manager._handle_account_update(valid_update)
+    # No assertion needed - just verify no exceptions are raised
+
+@pytest.mark.performance
+def test_user_message_processing_performance(price_manager):
+    """Test performance of user message processing."""
+    mock_callback = Mock()
+    price_manager.register_order_callback('test', mock_callback)
+    
+    # Create a batch of valid messages
+    messages = []
+    for i in range(1000):
+        messages.append(json.dumps({
+            'e': 'executionReport',
+            'i': str(i),
+            'X': 'FILLED',
+            'q': '100.0',
+            'z': '100.0',
+            'p': '1.2345',
+            'l': '100.0',
+            'L': '1.2345',
+            'n': '0.1',
+            'N': 'TRUMP'
+        }))
+    
+    start_time = time.perf_counter()
+    
+    # Process all messages
+    for message in messages:
+        price_manager._handle_user_message(None, message)
+    
+    end_time = time.perf_counter()
+    processing_time = (end_time - start_time) * 1000  # Convert to milliseconds
+    
+    # Verify performance
+    assert processing_time < 1000.0, f"Processing time {processing_time}ms exceeds 1000ms threshold"
+    assert mock_callback.call_count == 1000
+
 # Performance Tests
 @pytest.mark.performance
 class TestPriceManagerPerformance:
@@ -293,4 +461,136 @@ class TestPriceManagerPerformance:
         
         # Assert reasonable reconnection times (adjust based on requirements)
         assert avg_reconnect_time < 0.1, f"Average reconnection time {avg_reconnect_time}s exceeds 100ms threshold"
-        assert max_reconnect_time < 0.5, f"Maximum reconnection time {max_reconnect_time}s exceeds 500ms threshold" 
+        assert max_reconnect_time < 0.5, f"Maximum reconnection time {max_reconnect_time}s exceeds 500ms threshold"
+
+class TestPriceManagerErrorHandling:
+    """Test WebSocket error handling in PriceManager."""
+    
+    @pytest.fixture
+    def price_manager(self):
+        """Create PriceManager instance for testing."""
+        manager = PriceManager()
+        yield manager
+        manager.stop()
+    
+    def test_market_websocket_reconnection(self, price_manager):
+        """Test market WebSocket reconnection with exponential backoff."""
+        # Mock WebSocket
+        mock_ws = MagicMock()
+        price_manager.ws = mock_ws
+        
+        # Simulate connection error
+        price_manager._handle_market_error(mock_ws, Exception("Test error"))
+        
+        # Verify state
+        assert not price_manager.connected
+        assert price_manager.reconnection_attempts == 0
+        
+        # Simulate reconnection attempt
+        should_continue = price_manager._handle_reconnection()
+        
+        # Verify exponential backoff
+        assert should_continue
+        assert price_manager.reconnection_attempts == 1
+        assert price_manager.using_rest_fallback
+        
+    def test_websocket_timeout_shutdown(self, price_manager):
+        """Test WebSocket timeout shutdown after 15 minutes."""
+        # Mock WebSocket and time
+        mock_ws = MagicMock()
+        price_manager.ws = mock_ws
+        price_manager.reconnection_start_time = time.time() - WEBSOCKET_RECONNECT_TIMEOUT - 1
+        
+        # Simulate reconnection attempt
+        with pytest.raises(SystemExit):
+            price_manager._handle_reconnection()
+        
+        # Verify shutdown state
+        assert not price_manager.should_run
+        assert not price_manager.connected
+        
+    def test_rest_api_fallback(self, price_manager):
+        """Test REST API fallback during WebSocket disconnection."""
+        # Mock REST API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {'price': '100.0'}
+        
+        with patch('requests.get', return_value=mock_response):
+            # Start fallback
+            price_manager._start_rest_fallback()
+            assert price_manager.using_rest_fallback
+            
+            # Wait for fallback update
+            time.sleep(REST_API_REFRESH_RATE * 2)
+            
+            # Stop fallback
+            price_manager._stop_rest_fallback()
+            assert not price_manager.using_rest_fallback
+            
+    def test_user_stream_error_handling(self, price_manager):
+        """Test user data stream error handling."""
+        # Mock WebSocket
+        mock_ws = MagicMock()
+        price_manager.user_ws = mock_ws
+        
+        # Simulate error
+        price_manager._handle_user_error(mock_ws, Exception("Test error"))
+        assert not price_manager.user_stream_connected
+        
+        # Simulate reconnection
+        price_manager._handle_user_open(mock_ws)
+        assert price_manager.user_stream_connected
+        assert price_manager.reconnection_attempts == 0
+        
+    def test_invalid_message_handling(self, price_manager):
+        """Test handling of invalid WebSocket messages."""
+        # Mock WebSocket
+        mock_ws = MagicMock()
+        
+        # Test invalid JSON
+        price_manager._handle_market_message(mock_ws, "invalid json")
+        assert price_manager.current_price is None
+        
+        # Test invalid message format
+        price_manager._handle_market_message(mock_ws, json.dumps({}))
+        assert price_manager.current_price is None
+        
+        # Test valid price update
+        price_manager._handle_market_message(mock_ws, json.dumps({'p': '100.0'}))
+        assert price_manager.current_price == 100.0
+        
+    def test_connection_monitoring(self, price_manager):
+        """Test WebSocket connection monitoring."""
+        # Mock WebSocket
+        mock_ws = MagicMock()
+        price_manager.ws = mock_ws
+        price_manager.connected = True
+        
+        # Set old message time
+        price_manager.last_message_time = time.time() - WEBSOCKET_RECONNECT_TIMEOUT - 1
+        
+        # Run monitor once
+        price_manager._monitor_connection()
+        
+        # Verify connection was closed
+        mock_ws.close.assert_called_once()
+        
+    def test_graceful_shutdown(self, price_manager):
+        """Test graceful shutdown process."""
+        # Mock WebSocket connections
+        mock_market_ws = MagicMock()
+        mock_user_ws = MagicMock()
+        price_manager.ws = mock_market_ws
+        price_manager.user_ws = mock_user_ws
+        price_manager.listen_key = "test_key"
+        
+        # Stop price manager
+        price_manager.stop()
+        
+        # Verify cleanup
+        assert not price_manager.should_run
+        mock_market_ws.close.assert_called_once()
+        mock_user_ws.close.assert_called_once()
+        assert not price_manager.connected
+        assert not price_manager.user_stream_connected 

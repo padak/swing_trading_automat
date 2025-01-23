@@ -4,20 +4,27 @@ Provides CRUD operations and session management.
 """
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Generator, Optional, List, Dict, Any
+from typing import Generator, Optional, List, Dict, Any, Tuple
+from decimal import Decimal
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, or_, and_, desc, func
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 from src.config.logging_config import get_logger
 from src.config.settings import DB_PATH
-from .models import Base, Order, TradePair, SystemState
+from .models import Base, Order, OrderStatus, SystemState
 
 logger = get_logger(__name__)
 
 # Create database engine
 engine = create_engine(f"sqlite:///{DB_PATH}")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def init_db():
+    """Initialize database schema."""
+    Base.metadata.create_all(bind=engine)
+    logger.info("Initialized database schema")
 
 @contextmanager
 def get_db() -> Generator[Session, None, None]:
@@ -36,131 +43,345 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-# Order Operations
 def create_order(
     db: Session,
-    binance_order_id: str,
+    order_id: str,
     symbol: str,
     side: str,
-    price: float,
     quantity: float,
-    parent_order_id: Optional[int] = None
+    price: float,
+    status: OrderStatus,
+    order_type: str = 'LIMIT',
+    related_order_id: Optional[str] = None,
+    filled_quantity: Optional[float] = None,
+    average_price: Optional[float] = None
 ) -> Order:
-    """Create a new order record."""
-    order = Order(
-        binance_order_id=binance_order_id,
-        symbol=symbol,
-        side=side,
-        price=price,
-        quantity=quantity,
-        status="OPEN",
-        parent_order_id=parent_order_id
-    )
-    db.add(order)
-    db.flush()  # Get the ID without committing
-    logger.info("Created order", order_id=order.id, binance_id=binance_order_id)
-    return order
-
-def get_order_by_id(db: Session, order_id: int) -> Optional[Order]:
-    """Get an order by its ID."""
-    return db.get(Order, order_id)
-
-def get_order_by_binance_id(db: Session, binance_id: str) -> Optional[Order]:
-    """Get an order by its Binance order ID."""
-    return db.scalar(select(Order).where(Order.binance_order_id == binance_id))
+    """
+    Create a new order record.
+    
+    Args:
+        db: Database session
+        order_id: Unique order identifier
+        symbol: Trading pair symbol
+        side: BUY or SELL
+        quantity: Order quantity
+        price: Order price
+        status: Order status
+        order_type: Order type (LIMIT, MARKET, PARTIAL_FILL)
+        related_order_id: ID of related order (for partial fills/sells)
+        filled_quantity: Amount filled so far
+        average_price: Average fill price
+        
+    Returns:
+        Order: Created order record
+        
+    Raises:
+        IntegrityError: If order_id already exists
+    """
+    try:
+        order = Order(
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            status=status,
+            order_type=order_type,
+            related_order_id=related_order_id,
+            filled_quantity=filled_quantity or 0.0,
+            average_price=average_price or price,
+            created_at=datetime.utcnow()
+        )
+        db.add(order)
+        db.flush()
+        
+        logger.info(
+            "Created order",
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            status=status.value,
+            order_type=order_type
+        )
+        return order
+        
+    except IntegrityError as e:
+        logger.error(
+            "Failed to create order - duplicate order_id",
+            order_id=order_id,
+            error=str(e)
+        )
+        raise
 
 def update_order(
     db: Session,
-    order_id: int,
-    update_data: Dict[str, Any]
+    order_id: str,
+    status: Optional[OrderStatus] = None,
+    filled_quantity: Optional[float] = None,
+    average_price: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None
 ) -> Optional[Order]:
     """
-    Update an order with the provided data.
+    Update an order's status and fill information.
     
     Args:
-        db (Session): Database session
-        order_id (int): ID of the order to update
-        update_data (Dict[str, Any]): Dictionary of fields to update and their values
+        db: Database session
+        order_id: Order to update
+        status: New order status
+        filled_quantity: Updated fill quantity
+        average_price: Updated average fill price
+        metadata: Additional data to store
         
     Returns:
-        Optional[Order]: Updated order if found, None otherwise
+        Optional[Order]: Updated order if found
     """
     order = get_order_by_id(db, order_id)
-    if order:
-        for field, value in update_data.items():
-            if hasattr(order, field):
-                setattr(order, field, value)
-                if field == "status" and value == "FILLED":
-                    order.fill_time = datetime.utcnow()
-        logger.info("Updated order", order_id=order_id, fields=list(update_data.keys()))
-    return order
-
-def update_order_status(
-    db: Session,
-    order_id: int,
-    status: str,
-    fill_price: Optional[float] = None,
-    fill_quantity: Optional[float] = None
-) -> Optional[Order]:
-    """Update an order's status and fill information."""
-    order = get_order_by_id(db, order_id)
-    if order:
+    if not order:
+        logger.error("Order not found for update", order_id=order_id)
+        return None
+    
+    # Track changes for logging
+    changes = {}
+    
+    if status is not None and status != order.status:
+        changes['status'] = (order.status.value, status.value)
         order.status = status
-        if fill_price is not None:
-            order.fill_price = fill_price
-        if fill_quantity is not None:
-            order.fill_quantity = fill_quantity
-        if status == "FILLED":
-            order.fill_time = datetime.utcnow()
-        logger.info("Updated order status", order_id=order_id, status=status)
+        order.status_updated_at = datetime.utcnow()
+    
+    if filled_quantity is not None and filled_quantity != order.filled_quantity:
+        changes['filled_quantity'] = (order.filled_quantity, filled_quantity)
+        order.filled_quantity = filled_quantity
+        order.last_fill_time = datetime.utcnow()
+    
+    if average_price is not None and average_price != order.average_price:
+        changes['average_price'] = (order.average_price, average_price)
+        order.average_price = average_price
+    
+    if metadata:
+        order.metadata = {**(order.metadata or {}), **metadata}
+        changes['metadata'] = metadata
+    
+    if changes:
+        logger.info(
+            "Updated order",
+            order_id=order_id,
+            changes=changes
+        )
+    
     return order
 
-def get_open_orders(db: Session) -> List[Order]:
-    """Get all open orders."""
-    return list(db.scalars(select(Order).where(Order.status == "OPEN")))
+def get_order_by_id(db: Session, order_id: str) -> Optional[Order]:
+    """Get an order by its ID."""
+    return db.scalar(select(Order).where(Order.order_id == order_id))
 
-# Trade Pair Operations
-def create_trade_pair(
+def get_orders_by_status(
     db: Session,
-    buy_order_id: int,
-    target_profit_price: float,
-    original_buy_id: Optional[int] = None
-) -> TradePair:
-    """Create a new trade pair record."""
-    trade_pair = TradePair(
-        buy_order_id=buy_order_id,
-        target_profit_price=target_profit_price,
-        status="WAITING_FOR_PROFIT",
-        original_buy_id=original_buy_id
+    status: List[OrderStatus],
+    symbol: Optional[str] = None,
+    side: Optional[str] = None,
+    limit: Optional[int] = None
+) -> List[Order]:
+    """
+    Get orders by status with optional filtering.
+    
+    Args:
+        db: Database session
+        status: List of statuses to include
+        symbol: Optional symbol filter
+        side: Optional side filter (BUY/SELL)
+        limit: Optional limit on number of orders
+        
+    Returns:
+        List[Order]: Matching orders
+    """
+    query = select(Order).where(Order.status.in_(status))
+    
+    if symbol:
+        query = query.where(Order.symbol == symbol)
+    if side:
+        query = query.where(Order.side == side)
+    
+    query = query.order_by(desc(Order.created_at))
+    
+    if limit:
+        query = query.limit(limit)
+    
+    return list(db.scalars(query))
+
+def get_open_orders(
+    db: Session,
+    symbol: Optional[str] = None,
+    side: Optional[str] = None
+) -> List[Order]:
+    """
+    Get all open orders (NEW or PARTIALLY_FILLED).
+    
+    Args:
+        db: Database session
+        symbol: Optional symbol filter
+        side: Optional side filter
+        
+    Returns:
+        List[Order]: Open orders
+    """
+    return get_orders_by_status(
+        db,
+        [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED],
+        symbol,
+        side
     )
-    db.add(trade_pair)
-    db.flush()
-    logger.info("Created trade pair", trade_pair_id=trade_pair.id)
-    return trade_pair
 
-def update_trade_pair(
+def get_related_orders(
     db: Session,
-    trade_pair_id: int,
-    sell_order_id: Optional[int] = None,
-    status: Optional[str] = None
-) -> Optional[TradePair]:
-    """Update a trade pair with sell order information."""
-    trade_pair = db.get(TradePair, trade_pair_id)
-    if trade_pair:
-        if sell_order_id is not None:
-            trade_pair.sell_order_id = sell_order_id
-        if status is not None:
-            trade_pair.status = status
-        logger.info("Updated trade pair", trade_pair_id=trade_pair_id, status=status)
-    return trade_pair
-
-def get_active_trade_pairs(db: Session) -> List[TradePair]:
-    """Get all trade pairs that are not completed."""
+    order_id: str,
+    include_parent: bool = True
+) -> List[Order]:
+    """
+    Get all orders related to the given order ID.
+    
+    Args:
+        db: Database session
+        order_id: Order ID to find relations for
+        include_parent: Whether to include the parent order
+        
+    Returns:
+        List[Order]: Related orders
+    """
+    conditions = [Order.related_order_id == order_id]
+    if include_parent:
+        conditions.append(Order.order_id == order_id)
+    
     return list(db.scalars(
-        select(TradePair).where(TradePair.status != "COMPLETED")
+        select(Order).where(or_(*conditions))
     ))
 
-# System State Operations
+def get_order_chain(
+    db: Session,
+    order_id: str
+) -> List[Order]:
+    """
+    Get the complete chain of related orders.
+    Includes the original order, all partial fills, and all sell orders.
+    Orders are returned in chronological order.
+    
+    Args:
+        db: Database session
+        order_id: Starting order ID
+        
+    Returns:
+        List[Order]: Chain of related orders
+    """
+    # Get the original order and its direct relations
+    orders = get_related_orders(db, order_id)
+    
+    # Get any orders related to the related orders
+    related_ids = {o.order_id for o in orders} - {order_id}
+    while related_ids:
+        new_related = []
+        for related_id in related_ids:
+            new_related.extend(get_related_orders(db, related_id, False))
+        
+        if not new_related:
+            break
+            
+        orders.extend(new_related)
+        related_ids = {o.order_id for o in new_related}
+    
+    # Sort by creation time
+    return sorted(orders, key=lambda o: o.created_at or datetime.max)
+
+def get_position_summary(
+    db: Session,
+    order_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Get a summary of a position including all related orders.
+    
+    Args:
+        db: Database session
+        order_id: Order ID to summarize
+        
+    Returns:
+        Optional[Dict[str, Any]]: Position summary or None if not found
+    """
+    order = get_order_by_id(db, order_id)
+    if not order:
+        return None
+    
+    chain = get_order_chain(db, order_id)
+    
+    # Calculate totals
+    total_bought = sum(
+        o.filled_quantity or 0
+        for o in chain
+        if o.side == 'BUY' and o.status in [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED]
+    )
+    
+    total_sold = sum(
+        o.filled_quantity or 0
+        for o in chain
+        if o.side == 'SELL' and o.status == OrderStatus.FILLED
+    )
+    
+    # Calculate average prices
+    buy_value = sum(
+        (o.filled_quantity or 0) * (o.average_price or o.price)
+        for o in chain
+        if o.side == 'BUY' and o.status in [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED]
+    )
+    
+    sell_value = sum(
+        (o.filled_quantity or 0) * (o.average_price or o.price)
+        for o in chain
+        if o.side == 'SELL' and o.status == OrderStatus.FILLED
+    )
+    
+    avg_buy_price = buy_value / total_bought if total_bought > 0 else 0
+    avg_sell_price = sell_value / total_sold if total_sold > 0 else 0
+    
+    return {
+        'order_id': order_id,
+        'symbol': order.symbol,
+        'total_quantity': order.quantity,
+        'total_bought': total_bought,
+        'total_sold': total_sold,
+        'remaining_quantity': total_bought - total_sold,
+        'avg_buy_price': avg_buy_price,
+        'avg_sell_price': avg_sell_price,
+        'realized_profit': sell_value - (total_sold * avg_buy_price),
+        'status': order.status.value,
+        'created_at': order.created_at,
+        'last_updated': max(o.status_updated_at or datetime.min for o in chain),
+        'has_partial_fills': any(o.order_type == 'PARTIAL_FILL' for o in chain),
+        'buy_orders': [
+            {
+                'order_id': o.order_id,
+                'quantity': o.quantity,
+                'filled_quantity': o.filled_quantity,
+                'price': o.price,
+                'average_price': o.average_price,
+                'status': o.status.value,
+                'type': o.order_type
+            }
+            for o in chain
+            if o.side == 'BUY'
+        ],
+        'sell_orders': [
+            {
+                'order_id': o.order_id,
+                'quantity': o.quantity,
+                'filled_quantity': o.filled_quantity,
+                'price': o.price,
+                'average_price': o.average_price,
+                'status': o.status.value
+            }
+            for o in chain
+            if o.side == 'SELL'
+        ]
+    }
+
 def get_system_state(db: Session) -> SystemState:
     """Get or create the system state record."""
     state = db.scalar(select(SystemState))
@@ -187,10 +408,4 @@ def update_system_state(
         state.reconnection_attempts = reconnection_attempts
     state.last_processed_time = datetime.utcnow()
     logger.info("Updated system state", websocket_status=websocket_status)
-    return state
-
-def record_reconciliation(db: Session) -> None:
-    """Record a successful state reconciliation."""
-    state = get_system_state(db)
-    state.last_reconciliation_time = datetime.utcnow()
-    logger.info("Recorded state reconciliation") 
+    return state 
