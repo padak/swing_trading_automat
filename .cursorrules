@@ -1,0 +1,200 @@
+1. Coding Standards & Style
+
+1. Follow PEP 8:
+  - Use a style checker (e.g., flake8, pycodestyle) or automatic formatting (black) to ensure clean code formatting.
+  - Line length up to ~88 or 100 characters (depending on team preference).
+  - Use snake_case for variable and function names, PascalCase for classes.
+
+2. Type Hints:
+  - Wherever possible, include PEP 484 type hints to make the code self-documenting and reduce errors.
+  - Example:
+  ```
+  def place_sell_order(symbol: str, quantity: float, price: float = None) -> dict:
+    ...
+    return order
+  ```
+
+3. Docstrings:
+  - Use a consistent docstring style (e.g., Google or reST style).
+  - Explain purpose, parameters, returns, exceptions.
+  - Example (Google style):
+  ```
+  def create_order(symbol: str, side: str, quantity: float) -> dict:
+    """
+    Creates an order on the Binance exchange.
+
+    Args:
+        symbol (str): The trading pair symbol, e.g., 'TRUMPUSDC'.
+        side (str): 'BUY' or 'SELL'.
+        quantity (float): Quantity of the asset to trade.
+
+    Returns:
+        dict: A dictionary representing the created order.
+    """
+    ...
+  ```
+
+4. Comments:
+  - Keep comments concise and meaningful.
+  - Avoid redundant comments; code should be self-explanatory where possible.
+  - If a piece of logic is non-trivial, add clarifying comments.
+
+----
+
+2. Project Structure & Organization
+
+1. Modular Approach:
+ - Keep distinct concerns in separate modules (e.g., database, trading logic, WebSocket listener).
+ - Avoid large “God classes” or “God modules” that handle everything.
+
+2. Single Entry Point:
+ - main.py orchestrates initialization and ties modules together.
+ - Use command-line arguments or a config file for environment-specific behavior (e.g., --mode trade vs. --mode read_only).
+
+3. Configuration & Secrets:
+ - Use environment variables for secrets like API keys (do not commit them).
+ - In config.py, load them safely (os.environ.get('API_KEY')).
+
+4. Documentation Structure:
+ - Keep user-focused docs in USER_GUIDE.md and developer-focused docs in DEVELOPER_GUIDE.md.
+ - Update documentation whenever you add or change features.
+
+----
+
+3. Environment & Dependencies
+
+1. Requirements Management:
+ - All external libraries should be pinned in requirements.txt (or use poetry/pipenv with explicit version constraints).
+ - For packaging, you may also maintain a setup.py or pyproject.toml.
+
+2. Virtual Environments:
+ - Encourage the use of venv, conda, or similar to isolate dependencies.
+ - Document the environment setup in the README.md.
+
+----
+
+4. Testing & Quality Assurance
+
+1. Unit Tests:
+ - Write tests using pytest (preferred) or unittest.
+ - Store tests in a separate tests/ directory mirroring the structure of the source code.
+ - Each module should have corresponding tests for critical paths (e.g., DB manager, order manager, etc.).
+
+2. Mocking External Services:
+ - For Binance API calls, mock responses using unittest.mock or pytest-mock.
+ - This avoids hitting real endpoints during tests and ensures deterministic results.
+
+3. Integration Tests:
+ - Include a way to do an end-to-end test (possibly with a paper trading environment or mock).
+ - Validate that the system can fetch orders, match them, and place new ones without manual intervention.
+
+4. Coverage:
+ - Use coverage tools (e.g., coverage.py) to track test coverage.
+ - Aim for a reasonable coverage target (e.g., 80%+), focusing on critical paths.
+
+----
+
+5. Error Handling & Logging
+
+1. Error Handling:
+ - Use structured try/except blocks where network or I/O errors might occur.
+ - Provide useful exception messages or fallback behavior.
+
+2. Logging:
+ - Leverage Python’s built-in logging module.
+ - Use log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+ - Configure logging in a central place (e.g., utils.py or main.py).
+ - Avoid excessive print() statements for production code; rely on logs instead.
+
+3. Graceful Shutdown:
+ - For the WebSocket listener or the main event loop, ensure you handle KeyboardInterrupt and close resources (e.g., DB connections) properly.
+
+----
+
+6. Database Practices
+
+1. SQLite Usage:
+ - Maintain consistent schema creation in database.py.
+ - Abstract queries behind methods, so other parts of the codebase don’t execute raw SQL inline.
+
+2. Data Integrity:
+ - Whenever possible, handle partial fills by storing fill events or adjusting the relevant row.
+ - Confirm database commits succeed (handle transaction commits in try/except).
+
+3. Migration Strategy:
+ - For more advanced usage, consider a migration tool (e.g., Alembic) if the schema changes frequently.
+ - Keep track of schema versions if the DB evolves.
+
+----
+
+7. AI Interaction & Code Generation Guidelines
+
+Because we may use AI (e.g., ChatGPT, Copilot) to generate or refactor code, set the following guidelines for the AI’s interaction:
+
+1. Context Preservation:
+ - Always provide the AI with relevant context (e.g., function docstrings, module purpose) to maintain consistency.
+ - Avoid mixing different modules or drastically changing the structure without reason.
+
+2. Refactoring Requests:
+ - When asking AI to refactor, specify which part of the code and why (performance, readability, new feature, etc.).
+ - Provide sample input/outputs or test cases so the AI can better align with project requirements.
+
+3. Incremental Changes:
+ - Encourage incremental code changes with well-documented commits rather than massive “all-in-one” merges.
+ - After AI code generation, always do a human review to ensure correctness and project compatibility.
+
+4. Compliance with Best Practices:
+ - The AI-generated code must still adhere to PEP 8, docstring conventions, logging standards, etc.
+ - If the AI suggests ignoring these guidelines, do a review and adapt as needed (or override the suggestion).
+
+5. Security & Secret Handling:
+ - The AI must never hardcode or reveal real API keys.
+ - If any code snippet includes placeholders for API keys, it should be clearly marked as an example only (e.g., "YOUR_API_KEY").
+
+6. Ethical & Legal Considerations:
+ - Ensure that any AI-driven approach to trading does not violate Binance’s Terms of Service or local financial regulations.
+ - Maintain disclaimers that this is an experimental system, especially for code that could place real trades.
+
+----
+
+8. Version Control & Collaboration
+
+1. Git Workflow:
+ - Use feature branches for new functionalities, merge into dev (or main) via Pull Requests.
+ - Write concise, descriptive commit messages (e.g., “Add partial fill handling to orders_manager.py”).
+ - Tag releases if you do versioned deployments.
+
+2. Code Reviews:
+ - Every Pull Request should be reviewed by at least one other person (or thoroughly self-reviewed).
+ - Check for logic flaws, test coverage, style compliance, and security issues.
+
+3. Continuous Integration (CI):
+ - If possible, set up CI (e.g., GitHub Actions) to run lint checks, tests, and coverage reports on every push/PR.
+ - Fail the build if coverage or lint thresholds aren’t met.
+
+----
+
+9. Maintenance & Future Upgrades
+
+1. Scalability:
+ - If you move beyond SQLite, consider a more robust DB or a cloud-based service.
+ - If you anticipate more traffic or real-time data, plan for async patterns or event-driven architecture.
+
+2. Error/Exception Monitoring:
+ - If going production, integrate with a monitoring system (e.g., Sentry, Rollbar) to track exceptions.
+
+3. Future Roadmap:
+ - Keep a clear backlog of features (e.g., AI-based trend detection, backtesting module).
+ - Mark “nice-to-have” vs. “critical” tasks in your issue tracker or project board.
+
+----
+
+10. Summary
+
+By following these best practices:
+ - Code remains consistent, readable, and maintainable.
+ - Collaboration is smoother, as everyone follows the same guidelines.
+ - AI-generated code integrates seamlessly without unexpected style or security issues.
+ - Long-term stability is supported through testing, logging, and clear version control.
+
+These guidelines should serve as a living document—feel free to amend or expand them as your project evolves.
