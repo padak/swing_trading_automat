@@ -1,5 +1,7 @@
 # API Client
 python-binance>=1.0.19
+requests>=2.31.0    # Latest secure version
+urllib3>=2.0.7     # Latest secure version
 
 # Database
 SQLAlchemy>=2.0.0
