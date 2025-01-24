@@ -86,16 +86,17 @@ class OrderManager:
         # Set running flag to false first
         self.running = False
         
-        # Stop duration monitoring thread with timeout
+        # Stop duration monitoring thread with shorter timeout
         if self.duration_monitor_thread and self.duration_monitor_thread.is_alive():
             self.logger.debug("Waiting for duration monitor thread to stop...")
-            self.duration_monitor_thread.join(timeout=5)
+            self.duration_monitor_thread.join(timeout=1)  # Even shorter timeout
             if self.duration_monitor_thread.is_alive():
-                self.logger.warning("Duration monitor thread did not stop within timeout")
+                self.logger.warning("Duration monitor thread did not stop in time")
         
         # Clear any stored state
         self.position_alerts.clear()
         self.state_transitions.clear()
+        self.monitored_orders.clear()
         
         self.logger.debug("OrderManager stop completed")
     
@@ -133,156 +134,117 @@ class OrderManager:
         except Exception as e:
             logger.error("Error handling price update", error=str(e))
     
-    def handle_order_update(self, order_data: Dict[str, Any]) -> None:
+    def handle_order_update(self, data: Dict[str, Any]) -> None:
         """Handle order update from WebSocket."""
         try:
-            # Extract data from Binance format
-            # Note: Binance uses 'i' for orderId, 'S' for side, 'X' for status
-            order_id = str(order_data.get('i', order_data.get('order_id')))
-            side = order_data.get('S', order_data.get('side', 'UNKNOWN'))
-            status = order_data.get('X', order_data.get('status'))
-            quantity = float(order_data.get('q', order_data.get('quantity', 0)))
-            filled_quantity = float(order_data.get('z', order_data.get('filled', 0)))
-            # Use last filled price if price is 0
-            price = float(order_data.get('L', order_data.get('last_filled_price', 0))) or float(order_data.get('p', order_data.get('price', 0)))
-            
-            self.logger.debug(
-                "Processing order update",
-                extra={
+            # Log raw data first for debugging
+            self.logger.debug("Received raw order update", extra={
+                "raw_data": data,
+                "event_type": data.get('e'),
+                "has_side": 'S' in data or 'side' in data,
+                "has_status": 'X' in data or 'status' in data
+            })
+
+            # Handle both WebSocket execution reports and simplified updates
+            if 'e' in data and data['e'] == 'executionReport':
+                # WebSocket execution report format
+                order_id = str(data['i'])
+                side = data['S']
+                status = data['X']
+                symbol = data['s']
+                quantity = float(data['q'])
+                filled = float(data['z'])
+                price = float(data['L']) if float(data['L']) > 0 else float(data['p'])
+                commission = float(data.get('n', 0))
+                commission_asset = data.get('N', '')
+            else:
+                # Simplified order update format
+                order_id = str(data['order_id'])
+                # For simplified format, try to get side from database if not provided
+                side = data.get('side', None)
+                if not side and 'status' in data:
+                    existing_order = self.state_manager.get_order_by_id(order_id)
+                    if existing_order:
+                        side = existing_order.side
+                status = data['status']
+                symbol = data.get('symbol', 'TRUMPUSDC')  # Default to our trading pair
+                quantity = float(data['quantity'])
+                filled = float(data['filled'])
+                # Use last_filled_price if available, otherwise use price
+                price = float(data['last_filled_price']) if data.get('last_filled_price', 0) > 0 else float(data.get('price', 0))
+                commission = float(data.get('commission', 0))
+                commission_asset = data.get('commission_asset', '')
+
+            self.logger.info("Processing order update", extra={
+                "order_id": order_id,
+                "side": side,
+                "status": status,
+                "symbol": symbol,
+                "quantity": quantity,
+                "filled": filled,
+                "price": price,
+                "commission": commission,
+                "commission_asset": commission_asset
+            })
+
+            # Get or create order in database
+            order = self.state_manager.get_order_by_id(order_id)
+            if not order and status in ['NEW', 'PARTIALLY_FILLED', 'OPEN']:
+                self.logger.debug(f"Creating new order record for {order_id}")
+                order = self.state_manager.create_order(
+                    binance_order_id=order_id,
+                    symbol=symbol,
+                    side=side or 'BUY',  # Default to BUY if side unknown
+                    quantity=quantity,
+                    price=price,
+                    status=status
+                )
+                self.logger.info("Created new order record", extra={
                     "order_id": order_id,
                     "side": side,
-                    "status": status,
-                    "quantity": quantity,
-                    "filled_quantity": filled_quantity,
-                    "price": price,
-                    "raw_data": order_data
-                }
-            )
-
-            with get_db() as db:
-                # First try to find existing order
-                order = get_order_by_id(db, order_id)
-                
-                # If order not found and this is an OPEN status, create it
-                if not order and status == "NEW":
-                    self.logger.info(
-                        "Creating new order record",
-                        extra={
-                            "order_id": order_id,
-                            "side": side,
-                            "quantity": quantity
-                        }
-                    )
-                    order = create_order(
-                        db,
-                        order_id=order_id,
-                        symbol=TRADING_SYMBOL,
-                        side=side,
-                        quantity=quantity,
-                        price=price,
-                        status=OrderStatus.OPEN
-                    )
-                elif not order:
-                    self.logger.error(
-                        "Order not found and not in OPEN status",
-                        extra={
-                            "order_id": order_id,
-                            "status": status
-                        }
-                    )
-                    return
-                else:
-                    self.logger.debug(
-                        "Found matching order in database",
-                        extra={
-                            "order_id": order_id,
-                            "db_status": order.status,
-                            "db_side": order.side
-                        }
-                    )
-
-                # Handle filled BUY orders
-                if status == "FILLED" and side == "BUY":
-                    self.logger.info(
-                        "BUY order filled, preparing SELL order",
-                        extra={
-                            "order_id": order_id,
-                            "fill_quantity": filled_quantity,
-                            "fill_price": price
-                        }
-                    )
-
-                    # Check minimum quantity
-                    if filled_quantity < MIN_SELL_QUANTITY:
-                        self.logger.warning(
-                            "Not placing SELL - below minimum quantity",
-                            extra={
-                                "quantity": filled_quantity,
-                                "min_required": MIN_SELL_QUANTITY
-                            }
-                        )
-                        return
-
-                    # Calculate target sell price
-                    try:
-                        target_price = self.calculate_sell_price(price)
-                        self.logger.info(
-                            "Calculated SELL target price",
-                            extra={
-                                "buy_price": price,
-                                "target_price": target_price,
-                                "profit_margin": ((target_price / price) - 1) * 100
-                            }
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "Failed to calculate sell price",
-                            error=str(e),
-                            buy_price=price
-                        )
-                        return
-
-                    # Place sell order
-                    try:
-                        sell_order = self.place_sell_order(
-                            symbol=order.symbol,
-                            quantity=filled_quantity,
-                            price=target_price,
-                            related_order_id=order_id
-                        )
-                        self.logger.info(
-                            "Successfully placed SELL order",
-                            extra={
-                                "sell_order_id": sell_order.order_id,
-                                "quantity": filled_quantity,
-                                "price": target_price,
-                                "related_buy_id": order_id
-                            }
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "Failed to place SELL order",
-                            error=str(e),
-                            quantity=filled_quantity,
-                            price=target_price
-                        )
-
-                # Update order status in database
-                update_order(
-                    db,
-                    order_id,
-                    status=OrderStatus(status),
-                    filled_quantity=filled_quantity,
-                    average_price=price
+                    "status": status
+                })
+            elif order:
+                self.logger.debug(f"Updating existing order {order_id}")
+                self.state_manager.update_order(
+                    order_id=order_id,
+                    status=status,
+                    filled_quantity=filled
                 )
+                self.logger.info("Updated order status", extra={
+                    "order_id": order_id,
+                    "old_status": order.status,
+                    "new_status": status,
+                    "filled": filled
+                })
+
+                # If this is a filled BUY order, place corresponding SELL
+                if status == 'FILLED' and (side == 'BUY' or order.side == 'BUY'):
+                    self.logger.info("Detected BUY fill → placing SELL", extra={
+                        "buy_order_id": order_id,
+                        "quantity": filled,
+                        "fill_price": price,
+                        "commission": commission,
+                        "commission_asset": commission_asset
+                    })
+                    
+                    # Account for commission if paid in the traded asset
+                    adjusted_quantity = filled
+                    if commission_asset == symbol.replace('USDC', ''):  # e.g., TRUMP for TRUMPUSDC
+                        adjusted_quantity -= commission
+                        self.logger.info("Adjusted quantity for commission", extra={
+                            "original_quantity": filled,
+                            "commission": commission,
+                            "adjusted_quantity": adjusted_quantity
+                        })
+                    
+                    self.place_sell_order(order, adjusted_quantity)
 
         except Exception as e:
-            self.logger.error(
-                "Error handling order update",
-                error=str(e),
-                order_data=order_data
-            )
-
+            self.logger.error("Error processing order update", 
+                             exc_info=True,
+                             extra={"raw_data": data})
+    
     def _handle_partial_fill(self, db, order: Order, update_data: Dict[str, Any]):
         """Handle partial order fills."""
         try:
@@ -896,15 +858,18 @@ class OrderManager:
                     
                     # Check positions
                     self._check_position_durations(db)
-                    
-                # Sleep for interval
-                time.sleep(POSITION_DURATION_CHECK_INTERVAL)
+            
+                # Check running flag more frequently
+                if not self.running:
+                    break
+                time.sleep(0.1)  # Much shorter sleep interval
                 
             except Exception as e:
-                logger.error(
-                    "Error in position duration monitoring",
-                    error=str(e)
-                )
+                if self.running:  # Only log if we're still supposed to be running
+                    self.logger.error(
+                        "Error in position duration monitoring",
+                        error=str(e)
+                    )
 
     def _check_position_durations(self, db):
         positions = self.get_open_positions()

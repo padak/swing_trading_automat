@@ -5,6 +5,7 @@ import signal
 import sys
 import logging
 import time
+import threading
 from typing import Optional, Any
 from dotenv import load_dotenv
 
@@ -82,74 +83,83 @@ class Application:
             self.shutdown()
             sys.exit(1)
 
-    def shutdown(self) -> None:
-        """Perform graceful shutdown of all components."""
-        # Prevent multiple shutdown attempts
-        if not self.running:
-            self.logger.warning("Shutdown already in progress")
-            return
-
-        self.logger.info("Initiating graceful shutdown")
-        self.running = False
-
-        try:
-            # Stop components in reverse order with timeouts
-            if self.order_manager:
-                self.logger.debug("Stopping Order Manager...")
-                self.order_manager.stop()
-                self.logger.debug("Order Manager stop() returned")
-
-            if self.price_manager:
-                self.logger.debug("Stopping Price Manager...")
-                self.price_manager.stop()
-                self.logger.debug("Price Manager stop() returned")
-
-            if self.state_manager:
-                self.logger.debug("Stopping State Manager...")
-                # Update final state before stopping
-                self.state_manager.update_state(
-                    websocket_status="STOPPED",
-                    last_error=None,
-                    reconnection_attempts=0
-                )
-                self.state_manager.stop()
-                self.logger.debug("State Manager stop() returned")
-
-        except Exception as e:
-            self.logger.error(f"Error during shutdown: {str(e)}")
-        
-        finally:
-            self.logger.info("All components stopped, calling os._exit(0)")
-            os._exit(0)  # Force exit after cleanup
-
     def handle_signal(self, signum: int, frame: Any) -> None:
         """Handle shutdown signal."""
         if not self.running:
-            self.logger.warning("Received additional shutdown signal, forcing exit")
+            self.logger.warning("Received second shutdown signal, forcing immediate exit")
             os._exit(1)
-        
+            
         self.logger.info(f"Received signal {signum}, initiating shutdown")
-        self.shutdown()
+        self.running = False
+        self.shutdown()  # Call shutdown directly instead of in a thread
+
+    def shutdown(self) -> None:
+        """Perform graceful shutdown of all components with timeout."""
+        self.logger.info("Initiating graceful shutdown")
+
+        def do_shutdown():
+            try:
+                # Stop components in reverse order with timeouts
+                if self.order_manager:
+                    self.logger.debug("Stopping Order Manager...")
+                    self.order_manager.stop()
+                    self.logger.debug("Order Manager stopped")
+
+                if self.price_manager:
+                    self.logger.debug("Stopping Price Manager...")
+                    self.price_manager.stop()
+                    self.logger.debug("Price Manager stopped")
+
+                if self.state_manager:
+                    self.logger.debug("Stopping State Manager...")
+                    # Update final state before stopping
+                    self.state_manager.update_state(
+                        websocket_status="STOPPED",
+                        last_error=None,
+                        reconnection_attempts=0
+                    )
+                    self.state_manager.stop()
+                    self.logger.debug("State Manager stopped")
+
+            except Exception as e:
+                self.logger.error("Error during shutdown", exc_info=True)
+                return False
+            return True
+
+        # Run shutdown in a separate thread with timeout
+        shutdown_thread = threading.Thread(target=do_shutdown)
+        shutdown_thread.daemon = True  # Make thread daemon so it won't block exit
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=2)  # Reduced timeout to 2 seconds
+
+        if shutdown_thread.is_alive():
+            self.logger.warning("Shutdown timed out after 2 seconds. Forcing exit.")
+            os._exit(1)
+        else:
+            self.logger.info("All components stopped successfully")
+            os._exit(0)  # Always force exit after cleanup
 
     def run(self) -> None:
         """Run the application."""
         try:
             # Register signal handler only once
             signal.signal(signal.SIGINT, self.handle_signal)
+            signal.signal(signal.SIGTERM, self.handle_signal)
             
             self.initialize()
             self.logger.info("Application initialized, entering main loop")
             
-            # Main loop with explicit exit condition check
+            # Main loop with shorter sleep interval
             while self.running:
-                time.sleep(1)
+                time.sleep(0.1)  # Reduced sleep time for faster response
                 
             self.logger.debug("Main loop ended, calling final shutdown")
             
         except Exception as e:
             self.logger.error(f"Error in main loop: {str(e)}")
         finally:
-            self.shutdown()
+            if self.running:  # Only call shutdown if not already shutting down
+                self.shutdown()
 
 def main():
     app = Application()

@@ -95,35 +95,46 @@ class PriceManager:
             raise
     
     def stop(self) -> None:
-        """Stop price manager and cleanup resources."""
+        """Stop price manager and cleanup WebSocket connections."""
+        self.logger.debug("PriceManager stop initiated")
+        self.should_run = False
+
         try:
-            self.should_run = False
-            
-            # Close WebSocket connections
+            # Close market data WebSocket
             if self.ws:
+                self.logger.debug("Closing market data WebSocket...")
                 self.ws.close()
-                self.market_thread.join(timeout=5)
-                
+                self.ws = None
+
+            # Close user data WebSocket
             if self.user_ws:
+                self.logger.debug("Closing user data WebSocket...")
                 self.user_ws.close()
-                self.user_thread.join(timeout=5)
-                
-            # Stop REST fallback if running
-            if self.rest_fallback_thread and self.rest_fallback_thread.is_alive():
-                self.using_rest_fallback = False
-                self.rest_fallback_thread.join(timeout=5)
-                
-            # Stop keep-alive thread if running
-            if self.keep_alive_thread and self.keep_alive_thread.is_alive():
-                self.keep_alive_thread.join(timeout=5)
-                
-            # Delete listen key if exists
+                self.user_ws = None
+
+            # Delete listen key to cleanup user data stream
             if self.listen_key:
-                self._delete_listen_key()
-                
-            # Stop monitor thread
+                try:
+                    self.logger.debug("Deleting listen key...")
+                    requests.delete(
+                        f"{BINANCE_API_URL}/v3/userDataStream",
+                        headers={"X-MBX-APIKEY": BINANCE_API_KEY},
+                        params={"listenKey": self.listen_key},
+                        timeout=1  # Short timeout for deletion request
+                    )
+                    self.listen_key = None
+                except Exception as e:
+                    self.logger.error("Error deleting listen key", exc_info=True)
+
+            # Stop the keep-alive timer with shorter timeout
+            if self.keep_alive_thread and self.keep_alive_thread.is_alive():
+                self.logger.debug("Stopping keep-alive timer...")
+                self.keep_alive_thread.join(timeout=1)
+                self.keep_alive_thread = None
+
+            # Stop monitor thread with shorter timeout
             if hasattr(self, 'monitor_thread') and self.monitor_thread.is_alive():
-                self.monitor_thread.join(timeout=5)
+                self.monitor_thread.join(timeout=1)
                 
             # Update system state
             with get_db() as db:
@@ -136,11 +147,8 @@ class PriceManager:
             self.logger.info("Price manager stopped successfully")
             
         except Exception as e:
-            self.logger.error(
-                "Error stopping price manager",
-                error=str(e)
-            )
-            raise
+            self.logger.error("Error during PriceManager shutdown", exc_info=True)
+            raise  # Re-raise to ensure parent knows shutdown failed
     
     def _get_listen_key(self) -> Optional[str]:
         """Get user data stream listen key."""
@@ -738,11 +746,13 @@ class PriceManager:
                         if self.ws:
                             self.ws.close()
                 
-                time.sleep(5)  # Check every 5 seconds
+                time.sleep(0.1)  # Check more frequently
                 
             except Exception as e:
                 self.logger.error(
                     "Error in connection monitor",
                     error=str(e)
                 )
-                time.sleep(5) 
+                if not self.should_run:  # Exit if we're shutting down
+                    break
+                time.sleep(0.1) 
