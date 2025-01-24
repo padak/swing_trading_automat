@@ -4,7 +4,8 @@ import os
 import signal
 import sys
 import logging
-from typing import Optional
+import time
+from typing import Optional, Any
 from dotenv import load_dotenv
 
 from src.config.logging_config import setup_logging
@@ -22,7 +23,7 @@ class Application:
         self.running = True
 
     def initialize(self):
-        """Initialize all components in the correct order."""
+        """Initialize all components according to design specification."""
         try:
             # Load environment variables
             load_dotenv()
@@ -35,19 +36,44 @@ class Application:
             initialize_database()
             self.logger.info("Database initialized")
             
-            # Initialize components
+            # Initialize components in correct order according to design:
+            # 1. Price Manager (WebSocket connections)
             self.price_manager = PriceManager()
-            self.order_manager = OrderManager()
-            self.state_manager = StateManager()
+            self.logger.info("Price Manager initialized")
+            
+            # 2. Order Manager (depends on Price Manager)
+            self.order_manager = OrderManager(
+                price_manager=self.price_manager,
+                state_manager=None  # Will be set after StateManager initialization
+            )
+            self.logger.info("Order Manager initialized")
+            
+            # 3. State Manager (requires both Price and Order managers)
+            self.state_manager = StateManager(
+                price_manager=self.price_manager,
+                order_manager=self.order_manager
+            )
+            # Update Order Manager with State Manager reference
+            self.order_manager.state_manager = self.state_manager
+            self.logger.info("State Manager initialized")
             
             # Register callbacks
             self.price_manager.register_price_callback(self.order_manager.handle_price_update)
             self.price_manager.register_order_callback(self.order_manager.handle_order_update)
+            self.logger.info("Callbacks registered")
             
-            # Start components
-            self.price_manager.start()
-            self.order_manager.start()
+            # Start components in order according to design:
+            # 1. State Manager (load and reconcile state)
             self.state_manager.start()
+            self.logger.info("State Manager started - state loaded and reconciled")
+            
+            # 2. Price Manager (establish WebSocket connections)
+            self.price_manager.start()
+            self.logger.info("Price Manager started - WebSocket connections established")
+            
+            # 3. Order Manager (begin monitoring)
+            self.order_manager.start()
+            self.logger.info("Order Manager started - monitoring orders")
             
             self.logger.info("All components initialized and started")
             
@@ -56,47 +82,73 @@ class Application:
             self.shutdown()
             sys.exit(1)
 
-    def shutdown(self):
-        """Gracefully shut down all components."""
+    def shutdown(self) -> None:
+        """Perform graceful shutdown of all components."""
+        # Prevent multiple shutdown attempts
+        if not self.running:
+            self.logger.warning("Shutdown already in progress")
+            return
+
         self.logger.info("Initiating graceful shutdown")
         self.running = False
-        
+
         try:
-            # Stop components in reverse order
-            if self.state_manager:
-                self.state_manager.stop()
+            # Stop components in reverse order with timeouts
             if self.order_manager:
+                self.logger.debug("Stopping Order Manager...")
                 self.order_manager.stop()
+                self.logger.debug("Order Manager stop() returned")
+
             if self.price_manager:
+                self.logger.debug("Stopping Price Manager...")
                 self.price_manager.stop()
-                
-            self.logger.info("All components stopped successfully")
-            
+                self.logger.debug("Price Manager stop() returned")
+
+            if self.state_manager:
+                self.logger.debug("Stopping State Manager...")
+                # Update final state before stopping
+                self.state_manager.update_state(
+                    websocket_status="STOPPED",
+                    last_error=None,
+                    reconnection_attempts=0
+                )
+                self.state_manager.stop()
+                self.logger.debug("State Manager stop() returned")
+
         except Exception as e:
             self.logger.error(f"Error during shutdown: {str(e)}")
         
-        sys.exit(0)
+        finally:
+            self.logger.info("All components stopped, calling os._exit(0)")
+            os._exit(0)  # Force exit after cleanup
 
-    def handle_signal(self, signum, frame):
-        """Handle system signals for graceful shutdown."""
-        self.logger.info(f"Received signal {signum}")
+    def handle_signal(self, signum: int, frame: Any) -> None:
+        """Handle shutdown signal."""
+        if not self.running:
+            self.logger.warning("Received additional shutdown signal, forcing exit")
+            os._exit(1)
+        
+        self.logger.info(f"Received signal {signum}, initiating shutdown")
         self.shutdown()
 
-    def run(self):
-        """Main application loop."""
-        # Register signal handlers
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
-        
+    def run(self) -> None:
+        """Run the application."""
         try:
-            self.initialize()
+            # Register signal handler only once
+            signal.signal(signal.SIGINT, self.handle_signal)
             
-            # Keep the main thread alive
+            self.initialize()
+            self.logger.info("Application initialized, entering main loop")
+            
+            # Main loop with explicit exit condition check
             while self.running:
-                signal.pause()
+                time.sleep(1)
                 
+            self.logger.debug("Main loop ended, calling final shutdown")
+            
         except Exception as e:
             self.logger.error(f"Error in main loop: {str(e)}")
+        finally:
             self.shutdown()
 
 def main():

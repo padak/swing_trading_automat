@@ -17,13 +17,13 @@ from sqlalchemy.orm import (
 from src.config.settings import DB_PATH
 
 class OrderStatus(str, Enum):
-    """Enum for order statuses."""
-    OPEN = "OPEN"
-    FILLED = "FILLED"
-    CANCELLED = "CANCELLED"
-    PARTIALLY_FILLED = "PARTIALLY_FILLED"
-    REJECTED = "REJECTED"
-    EXPIRED = "EXPIRED"
+    """Order status values according to design specification."""
+    OPEN = "OPEN"               # Initial state when order is placed
+    FILLED = "FILLED"           # Order has been completely filled
+    CANCELLED = "CANCELLED"     # Order was cancelled
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"  # Order is partially filled
+    REJECTED = "REJECTED"       # Order was rejected by exchange
+    EXPIRED = "EXPIRED"         # Order expired without being filled
 
 class SystemStatus(str, Enum):
     """Enum for system statuses."""
@@ -48,7 +48,7 @@ class Order(Base):
     side: Mapped[str] = mapped_column(String(4), nullable=False)  # 'BUY' or 'SELL'
     price: Mapped[float] = mapped_column(Float, nullable=False)
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(String(10), nullable=False)  # 'OPEN', 'FILLED', 'CANCELLED'
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     parent_order_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('orders.id'), nullable=True)
@@ -57,8 +57,24 @@ class Order(Base):
     fill_quantity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     fill_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    # Relationships
-    child_orders = relationship("Order", backref="parent_order")
+    # Add order_id property that maps to binance_order_id
+    @property
+    def order_id(self) -> str:
+        """Maintain compatibility with code expecting order_id."""
+        return self.binance_order_id
+
+    # Fix self-referential relationship
+    parent_order = relationship(
+        "Order",
+        remote_side=[id],
+        back_populates="child_orders"
+    )
+    child_orders = relationship(
+        "Order",
+        back_populates="parent_order"
+    )
+    
+    # Other relationships
     buy_trades = relationship("TradePair", backref="buy_order", foreign_keys="TradePair.buy_order_id")
     sell_trades = relationship("TradePair", backref="sell_order", foreign_keys="TradePair.sell_order_id")
 

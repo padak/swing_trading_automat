@@ -30,8 +30,6 @@ from src.config.settings import (
 from src.db.operations import get_db, update_system_state
 from src.db.models import SystemStatus, OrderStatus
 
-logger = get_logger(__name__)
-
 class PriceManager:
     """
     Price manager that handles WebSocket connections for price updates and order status.
@@ -42,9 +40,11 @@ class PriceManager:
         """
         Initialize price manager with WebSocket and REST endpoints.
         """
+        self.logger = get_logger(__name__)
+        
         symbol = TRADING_SYMBOL.lower()
         self.ws_url = f"wss://stream.binance.com:9443/ws/{symbol}@trade"
-        self.rest_api_url = f"https://api.binance.com/api/v3/ticker/price?symbol={TRADING_SYMBOL}"
+        self.rest_api_url = f"{BINANCE_API_URL}/v3/ticker/price?symbol={TRADING_SYMBOL}"
         
         self.ws: Optional[websocket.WebSocketApp] = None
         self.user_ws: Optional[websocket.WebSocketApp] = None
@@ -57,8 +57,8 @@ class PriceManager:
         self.using_rest_fallback = False
         
         self.current_price: Optional[float] = None
-        self.price_callbacks: Dict[str, Callable[[float], None]] = {}
-        self.order_callbacks: Dict[str, Callable[[Dict[str, Any]], None]] = {}
+        self.price_callbacks: List[Callable[[dict], None]] = []
+        self.order_callbacks: List[Callable[[dict], None]] = []
         
         # REST API endpoints
         self.listen_key_url = f"{BINANCE_API_URL}/v3/userDataStream"
@@ -85,10 +85,10 @@ class PriceManager:
             self.market_thread.start()
             self.user_thread.start()
             
-            logger.info("Price manager started successfully")
+            self.logger.info("Price manager started successfully")
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Error starting price manager",
                 error=str(e)
             )
@@ -102,26 +102,41 @@ class PriceManager:
             # Close WebSocket connections
             if self.ws:
                 self.ws.close()
+                self.market_thread.join(timeout=5)
+                
             if self.user_ws:
                 self.user_ws.close()
+                self.user_thread.join(timeout=5)
+                
+            # Stop REST fallback if running
+            if self.rest_fallback_thread and self.rest_fallback_thread.is_alive():
+                self.using_rest_fallback = False
+                self.rest_fallback_thread.join(timeout=5)
+                
+            # Stop keep-alive thread if running
+            if self.keep_alive_thread and self.keep_alive_thread.is_alive():
+                self.keep_alive_thread.join(timeout=5)
                 
             # Delete listen key if exists
             if self.listen_key:
                 self._delete_listen_key()
                 
+            # Stop monitor thread
+            if hasattr(self, 'monitor_thread') and self.monitor_thread.is_alive():
+                self.monitor_thread.join(timeout=5)
+                
             # Update system state
             with get_db() as db:
                 update_system_state(
                     db,
-                    status=SystemStatus.STOPPED,
                     websocket_status="DISCONNECTED",
                     last_error=None
                 )
             
-            logger.info("Price manager stopped successfully")
+            self.logger.info("Price manager stopped successfully")
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Error stopping price manager",
                 error=str(e)
             )
@@ -135,7 +150,7 @@ class PriceManager:
             response.raise_for_status()
             return response.json()['listenKey']
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to get listen key",
                 error=str(e),
                 symbol=TRADING_SYMBOL
@@ -150,12 +165,14 @@ class PriceManager:
         try:
             headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
             response = requests.put(
-                f"{self.listen_key_url}/{self.listen_key}",
-                headers=headers
+                f"{BINANCE_API_URL}/v3/userDataStream",
+                headers=headers,
+                params={'listenKey': self.listen_key}
             )
             response.raise_for_status()
+            self.logger.debug("Successfully refreshed listen key")
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to keep listen key alive",
                 error=str(e),
                 symbol=TRADING_SYMBOL
@@ -175,7 +192,7 @@ class PriceManager:
             )
             response.raise_for_status()
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to delete listen key",
                 error=str(e),
                 symbol=TRADING_SYMBOL
@@ -197,7 +214,6 @@ class PriceManager:
                 with get_db() as db:
                     update_system_state(
                         db,
-                        status=SystemStatus.RUNNING,
                         websocket_status="CONNECTING",
                         last_error=None
                     )
@@ -213,7 +229,7 @@ class PriceManager:
                     break
                     
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "Error in market WebSocket thread",
                     error=str(e)
                 )
@@ -230,12 +246,11 @@ class PriceManager:
         with get_db() as db:
             update_system_state(
                 db,
-                status=SystemStatus.RUNNING,
                 websocket_status="CONNECTED",
                 last_error=None
             )
         
-        logger.info(
+        self.logger.info(
             "Market WebSocket connected",
             symbol=TRADING_SYMBOL
         )
@@ -250,23 +265,23 @@ class PriceManager:
                 self.last_message_time = time.time()
                 
                 # Notify callbacks
-                for callback in self.price_callbacks.values():
+                for callback in self.price_callbacks:
                     try:
-                        callback(price)
+                        callback(data)
                     except Exception as e:
-                        logger.error(
+                        self.logger.error(
                             "Error in price callback",
                             callback=callback.__name__,
                             error=str(e)
                         )
                         
         except json.JSONDecodeError:
-            logger.error(
+            self.logger.error(
                 "Invalid JSON in market message",
                 message=message[:100]  # Log first 100 chars only
             )
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Error processing market message",
                 error=str(e),
                 message=message[:100]
@@ -280,12 +295,11 @@ class PriceManager:
         with get_db() as db:
             update_system_state(
                 db,
-                status=SystemStatus.ERROR,
                 websocket_status="ERROR",
                 last_error=str(error)
             )
         
-        logger.error(
+        self.logger.error(
             "Market WebSocket error",
             error=str(error)
         )
@@ -298,12 +312,11 @@ class PriceManager:
         with get_db() as db:
             update_system_state(
                 db,
-                status=SystemStatus.WARNING,
                 websocket_status="DISCONNECTED",
                 last_error=f"Connection closed: {close_msg}"
             )
         
-        logger.warning(
+        self.logger.warning(
             "Market WebSocket closed",
             status_code=close_status_code,
             message=close_msg
@@ -316,7 +329,7 @@ class PriceManager:
                 if not self.listen_key:
                     self.listen_key = self._get_listen_key()
                     if not self.listen_key:
-                        logger.error("Failed to get listen key, retrying...")
+                        self.logger.error("Failed to get listen key, retrying...")
                         time.sleep(WEBSOCKET_RECONNECT_DELAY)
                         continue
                     
@@ -334,7 +347,7 @@ class PriceManager:
                     on_open=self._handle_user_open
                 )
                 
-                logger.info(
+                self.logger.info(
                     "Starting user data WebSocket",
                     url=stream_url
                 )
@@ -346,7 +359,7 @@ class PriceManager:
                         break
                         
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "User WebSocket error",
                     error=str(e),
                     symbol=TRADING_SYMBOL
@@ -369,7 +382,7 @@ class PriceManager:
                 time.sleep(LISTEN_KEY_KEEP_ALIVE_INTERVAL / 4)
                 
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "Error in listen key keep-alive loop",
                     error=str(e)
                 )
@@ -386,7 +399,7 @@ class PriceManager:
                 elif event_type == 'outboundAccountPosition':
                     self._handle_account_update(data)
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to handle user message",
                 error=str(e),
                 message=message
@@ -403,39 +416,31 @@ class PriceManager:
             # Required fields validation
             required_fields = ['i', 'X', 'q', 'z', 'p', 'l', 'L']
             if not all(field in data for field in required_fields):
-                logger.error(
+                self.logger.error(
                     "Missing required fields in execution report",
                     data=data
                 )
                 return
             
+            # Map Binance status to internal status
+            status_mapping = {
+                'NEW': 'OPEN',
+                'PARTIALLY_FILLED': 'PARTIALLY_FILLED',
+                'FILLED': 'FILLED',
+                'CANCELED': 'CANCELLED',
+                'REJECTED': 'REJECTED',
+                'EXPIRED': 'EXPIRED',
+                'PENDING_CANCEL': 'CANCELLED'
+            }
+            
             # Extract and validate data
-            order_id = data['i']  # Order ID
-            status = data['X']    # Order status
+            order_id = str(data['i'])  # Order ID
+            status = status_mapping.get(data['X'], 'REJECTED')  # Map status or default to REJECTED
             quantity = float(data['q'])  # Original quantity
             filled = float(data['z'])    # Cumulative filled
             price = float(data['p'])     # Order price
             last_filled_qty = float(data['l'])  # Last filled quantity
             last_filled_price = float(data['L']) # Last filled price
-            
-            # Validate status is known
-            if status not in [s.value for s in OrderStatus]:
-                logger.error(
-                    "Unknown order status",
-                    status=status,
-                    order_id=order_id
-                )
-                return
-            
-            # Validate quantities
-            if filled > quantity:
-                logger.error(
-                    "Filled quantity exceeds order quantity",
-                    filled=filled,
-                    quantity=quantity,
-                    order_id=order_id
-                )
-                return
             
             # Create order update
             order_update = {
@@ -457,17 +462,17 @@ class PriceManager:
                 })
             
             # Notify callbacks
-            for callback in self.order_callbacks.values():
+            for callback in self.order_callbacks:
                 try:
                     callback(order_update)
                 except Exception as e:
-                    logger.error(
+                    self.logger.error(
                         "Error in order callback",
                         callback=callback.__name__,
                         error=str(e)
                     )
             
-            logger.info(
+            self.logger.info(
                 "Processed execution report",
                 order_id=order_id,
                 status=status,
@@ -476,7 +481,7 @@ class PriceManager:
             )
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to handle execution report",
                 error=str(e),
                 data=data
@@ -492,7 +497,7 @@ class PriceManager:
         try:
             # Validate update has balances
             if 'B' not in data:
-                logger.error(
+                self.logger.error(
                     "Missing balances in account update",
                     data=data
                 )
@@ -501,7 +506,7 @@ class PriceManager:
             # Process each balance update
             for balance in data['B']:
                 if not all(k in balance for k in ['a', 'f', 'l']):
-                    logger.error(
+                    self.logger.error(
                         "Invalid balance data",
                         balance=balance
                     )
@@ -512,7 +517,7 @@ class PriceManager:
                 locked = float(balance['l'])  # Locked amount
                 
                 # Log significant balance changes
-                logger.info(
+                self.logger.info(
                     "Account balance update",
                     asset=asset,
                     free=free,
@@ -521,7 +526,7 @@ class PriceManager:
                 )
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to handle account update",
                 error=str(e),
                 data=data
@@ -531,7 +536,7 @@ class PriceManager:
         """Handle user data WebSocket error."""
         self.user_stream_connected = False
         
-        logger.error(
+        self.logger.error(
             "User data WebSocket error",
             error=str(error),
             symbol=TRADING_SYMBOL
@@ -541,7 +546,6 @@ class PriceManager:
         with get_db() as db:
             update_system_state(
                 db,
-                status=SystemStatus.ERROR,
                 websocket_status="ERROR",
                 last_error=str(error)
             )
@@ -550,7 +554,7 @@ class PriceManager:
         """Handle user data WebSocket closure."""
         self.user_stream_connected = False
         
-        logger.warning(
+        self.logger.warning(
             "User data WebSocket closed",
             status_code=close_status_code,
             message=close_msg
@@ -560,7 +564,6 @@ class PriceManager:
         with get_db() as db:
             update_system_state(
                 db,
-                status=SystemStatus.WARNING,
                 websocket_status="PARTIALLY_CONNECTED",
                 last_error=f"User data stream closed: {close_msg}"
             )
@@ -569,7 +572,7 @@ class PriceManager:
         """Handle user data WebSocket open."""
         self.user_stream_connected = True
         self.reconnection_attempts = 0
-        logger.info(
+        self.logger.info(
             "User data WebSocket connected",
             symbol=TRADING_SYMBOL
         )
@@ -586,7 +589,7 @@ class PriceManager:
         
         # Check if we've exceeded 15-minute timeout
         if time.time() - self.reconnection_start_time > WEBSOCKET_RECONNECT_TIMEOUT:
-            logger.error(
+            self.logger.error(
                 "WebSocket reconnection timeout exceeded",
                 timeout_minutes=WEBSOCKET_RECONNECT_TIMEOUT/60,
                 total_attempts=self.reconnection_attempts
@@ -598,7 +601,7 @@ class PriceManager:
         delay = WEBSOCKET_INITIAL_RETRY_DELAY * (2 ** self.reconnection_attempts)
         self.reconnection_attempts += 1
         
-        logger.info(
+        self.logger.info(
             "Attempting to reconnect",
             attempt=self.reconnection_attempts,
             delay=delay,
@@ -615,12 +618,12 @@ class PriceManager:
             self.rest_fallback_thread = threading.Thread(target=self._run_rest_fallback)
             self.rest_fallback_thread.daemon = True
             self.rest_fallback_thread.start()
-            logger.info("Started REST API fallback")
+            self.logger.info("Started REST API fallback")
 
     def _stop_rest_fallback(self) -> None:
         """Stop REST API fallback when WebSocket is restored."""
         self.using_rest_fallback = False
-        logger.info("Stopped REST API fallback")
+        self.logger.info("Stopped REST API fallback")
 
     def _run_rest_fallback(self) -> None:
         """Run REST API fallback loop for price and order updates."""
@@ -630,7 +633,7 @@ class PriceManager:
                 response = requests.get(self.rest_api_url)
                 if response.status_code == 200:
                     price = float(response.json()['price'])
-                    for callback in self.price_callbacks.values():
+                    for callback in self.price_callbacks:
                         callback(price)
                 
                 # Get order updates if needed
@@ -638,7 +641,7 @@ class PriceManager:
                 
                 time.sleep(REST_API_REFRESH_RATE)
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "REST API fallback error",
                     error=str(e)
                 )
@@ -646,7 +649,7 @@ class PriceManager:
 
     def _handle_timeout_shutdown(self) -> None:
         """Handle shutdown after WebSocket reconnection timeout."""
-        logger.critical(
+        self.logger.critical(
             "Initiating shutdown due to WebSocket reconnection timeout",
             reconnection_attempts=self.reconnection_attempts,
             elapsed_time=(time.time() - self.reconnection_start_time)
@@ -657,7 +660,6 @@ class PriceManager:
             with get_db() as db:
                 update_system_state(
                     db,
-                    status=SystemStatus.ERROR,
                     websocket_status="DISCONNECTED",
                     last_error="WebSocket reconnection timeout exceeded"
                 )
@@ -671,10 +673,10 @@ class PriceManager:
             if self.listen_key:
                 self._delete_listen_key()
             
-            logger.info("Completed graceful shutdown after timeout")
+            self.logger.info("Completed graceful shutdown after timeout")
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Error during timeout shutdown",
                 error=str(e)
             )
@@ -683,13 +685,27 @@ class PriceManager:
         import sys
         sys.exit(1)
     
-    def register_price_callback(self, name: str, callback: Callable[[float], None]) -> None:
-        """Register callback for price updates."""
-        self.price_callbacks[name] = callback
-    
-    def register_order_callback(self, name: str, callback: Callable[[Dict[str, Any]], None]) -> None:
-        """Register callback for order updates."""
-        self.order_callbacks[name] = callback
+    def register_price_callback(self, callback: Callable[[dict], None]) -> None:
+        """
+        Registers a callback function to handle price updates.
+        
+        Args:
+            callback (Callable[[dict], None]): A function that takes a price update dict 
+                as a parameter and returns None.
+        """
+        self.price_callbacks.append(callback)
+        self.logger.info("Registered price update callback")
+
+    def register_order_callback(self, callback: Callable[[dict], None]) -> None:
+        """
+        Registers a callback function to handle order updates.
+        
+        Args:
+            callback (Callable[[dict], None]): A function that takes an order update dict
+                as a parameter and returns None.
+        """
+        self.order_callbacks.append(callback)
+        self.logger.info("Registered order update callback")
     
     def get_current_price(self) -> Optional[float]:
         """Get current price from REST API if WebSocket is not available."""
@@ -701,7 +717,7 @@ class PriceManager:
             response.raise_for_status()
             return float(response.json()['price'])
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to get price from REST API",
                 error=str(e),
                 symbol=TRADING_SYMBOL
@@ -715,7 +731,7 @@ class PriceManager:
                 if self.connected and self.last_message_time:
                     elapsed = time.time() - self.last_message_time
                     if elapsed > WEBSOCKET_RECONNECT_TIMEOUT:
-                        logger.error(
+                        self.logger.error(
                             "WebSocket message timeout",
                             elapsed_seconds=elapsed
                         )
@@ -725,7 +741,7 @@ class PriceManager:
                 time.sleep(5)  # Check every 5 seconds
                 
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "Error in connection monitor",
                     error=str(e)
                 )

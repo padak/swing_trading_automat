@@ -17,8 +17,8 @@ load_dotenv(dotenv_path=env_path)
 # API Configuration
 BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET: str = os.getenv("BINANCE_API_SECRET", "")
-BINANCE_API_URL: str = os.getenv("BINANCE_API_URL", "https://api.binance.com")
-BINANCE_STREAM_URL: str = os.getenv("BINANCE_STREAM_URL", "wss://stream.binance.com:9443")
+BINANCE_API_URL: str = "https://api.binance.com/api"
+BINANCE_STREAM_URL: str = "wss://stream.binance.com:9443"
 TRADING_SYMBOL: str = os.getenv("TRADING_SYMBOL", "TRUMPUSDC")
 
 # Trading Parameters

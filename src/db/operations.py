@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 engine = create_engine(f"sqlite:///{DB_PATH}")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def init_db():
+def initialize_database():
     """Initialize database schema."""
     Base.metadata.create_all(bind=engine)
     logger.info("Initialized database schema")
@@ -173,8 +173,10 @@ def update_order(
     return order
 
 def get_order_by_id(db: Session, order_id: str) -> Optional[Order]:
-    """Get an order by its ID."""
-    return db.scalar(select(Order).where(Order.order_id == order_id))
+    """Get an order by its Binance order ID."""
+    return db.scalar(
+        select(Order).where(Order.binance_order_id == str(order_id))
+    )
 
 def get_orders_by_status(
     db: Session,
@@ -228,7 +230,7 @@ def get_open_orders(
     """
     return get_orders_by_status(
         db,
-        [OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED],
+        [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED],
         symbol,
         side
     )
@@ -398,14 +400,35 @@ def update_system_state(
     last_error: Optional[str] = None,
     reconnection_attempts: Optional[int] = None
 ) -> SystemState:
-    """Update the system state."""
+    """
+    Update the system state according to design specification.
+    
+    Args:
+        db: Database session
+        websocket_status: Current WebSocket connection status
+        last_error: Last error message if any
+        reconnection_attempts: Number of reconnection attempts
+        
+    Returns:
+        SystemState: Updated system state
+    """
     state = get_system_state(db)
+    
     if websocket_status is not None:
         state.websocket_status = websocket_status
+        
     if last_error is not None:
         state.last_error = last_error
+        
     if reconnection_attempts is not None:
         state.reconnection_attempts = reconnection_attempts
+        
     state.last_processed_time = datetime.utcnow()
-    logger.info("Updated system state", websocket_status=websocket_status)
+    
+    logger.info(
+        "Updated system state",
+        websocket_status=websocket_status,
+        reconnection_attempts=reconnection_attempts
+    )
+    
     return state 

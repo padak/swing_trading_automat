@@ -35,22 +35,18 @@ from src.db.operations import (
     get_related_orders,
     update_system_state
 )
-from src.db.models import Order, OrderStatus
+from src.db.models import Order, OrderStatus, SystemStatus
 
 logger = get_logger(__name__)
 
-class OrderTransitionError(Exception):
-    """Raised when an invalid order state transition is attempted."""
-    pass
-
 class OrderTransition(Enum):
-    """Valid order state transitions."""
-    NEW_TO_PARTIAL = ('NEW', 'PARTIALLY_FILLED')
-    NEW_TO_FILLED = ('NEW', 'FILLED')
-    NEW_TO_CANCELED = ('NEW', 'CANCELED')
-    NEW_TO_REJECTED = ('NEW', 'REJECTED')
+    """Valid order state transitions according to design specification."""
+    OPEN_TO_PARTIAL = ('OPEN', 'PARTIALLY_FILLED')
+    OPEN_TO_FILLED = ('OPEN', 'FILLED')
+    OPEN_TO_CANCELLED = ('OPEN', 'CANCELLED')
+    OPEN_TO_REJECTED = ('OPEN', 'REJECTED')
     PARTIAL_TO_FILLED = ('PARTIALLY_FILLED', 'FILLED')
-    PARTIAL_TO_CANCELED = ('PARTIALLY_FILLED', 'CANCELED')
+    PARTIAL_TO_CANCELLED = ('PARTIALLY_FILLED', 'CANCELLED')
 
 class OrderManager:
     """
@@ -58,27 +54,290 @@ class OrderManager:
     Handles both market and limit orders with partial fill support.
     """
     
-    def __init__(self, price_manager):
+    def __init__(self, price_manager, state_manager):
         """
         Initialize order manager.
         
         Args:
             price_manager: Instance of PriceManager for price updates and order status
+            state_manager: Instance of StateManager for system state management
         """
+        self.logger = get_logger(__name__)  # Initialize logger first
         self.price_manager = price_manager
+        self.state_manager = state_manager
         self.monitored_orders: Dict[str, Dict[str, Any]] = {}
         self.position_alerts: Set[str] = set()  # Track orders that have triggered alerts
         self.state_transitions: Dict[str, List[Dict[str, Any]]] = {}
-        
-        # Register for order updates
-        self.price_manager.register_order_callback(
-            "order_manager",
-            self._handle_order_update
-        )
+        self.running = False
+        self.duration_monitor_thread = None
         
         # Start position duration monitoring
         self._start_duration_monitoring()
     
+    def start(self):
+        """Start the order manager."""
+        self.running = True
+        self.logger.info("Order Manager started")
+    
+    def stop(self) -> None:
+        """Stop the order manager and cleanup resources."""
+        self.logger.debug("OrderManager stop initiated")
+        
+        # Set running flag to false first
+        self.running = False
+        
+        # Stop duration monitoring thread with timeout
+        if self.duration_monitor_thread and self.duration_monitor_thread.is_alive():
+            self.logger.debug("Waiting for duration monitor thread to stop...")
+            self.duration_monitor_thread.join(timeout=5)
+            if self.duration_monitor_thread.is_alive():
+                self.logger.warning("Duration monitor thread did not stop within timeout")
+        
+        # Clear any stored state
+        self.position_alerts.clear()
+        self.state_transitions.clear()
+        
+        self.logger.debug("OrderManager stop completed")
+    
+    def handle_price_update(self, price: float):
+        """
+        Handle price updates from PriceManager.
+        Checks profit conditions and places sell orders if needed.
+        
+        Args:
+            price: Current market price
+        """
+        if not self.running:
+            return
+            
+        try:
+            with get_db() as db:
+                # Get all open buy orders
+                open_orders = get_open_orders(db, side='BUY')
+                
+                for order in open_orders:
+                    if order.status == OrderStatus.FILLED:
+                        # Calculate profit potential
+                        min_sell_price = calculate_min_sell_price(
+                            order.average_price or order.price,
+                            order.filled_quantity
+                        )
+                        
+                        if price >= min_sell_price:
+                            # Place sell order
+                            self.place_sell_order(
+                                order.binance_order_id,
+                                order.filled_quantity
+                            )
+                            
+        except Exception as e:
+            logger.error("Error handling price update", error=str(e))
+    
+    def handle_order_update(self, order_data: Dict[str, Any]) -> None:
+        """Handle order update from WebSocket."""
+        try:
+            # Extract data from Binance format
+            # Note: Binance uses 'i' for orderId, 'S' for side, 'X' for status
+            order_id = str(order_data.get('i', order_data.get('order_id')))
+            side = order_data.get('S', order_data.get('side', 'UNKNOWN'))
+            status = order_data.get('X', order_data.get('status'))
+            quantity = float(order_data.get('q', order_data.get('quantity', 0)))
+            filled_quantity = float(order_data.get('z', order_data.get('filled', 0)))
+            # Use last filled price if price is 0
+            price = float(order_data.get('L', order_data.get('last_filled_price', 0))) or float(order_data.get('p', order_data.get('price', 0)))
+            
+            self.logger.debug(
+                "Processing order update",
+                extra={
+                    "order_id": order_id,
+                    "side": side,
+                    "status": status,
+                    "quantity": quantity,
+                    "filled_quantity": filled_quantity,
+                    "price": price,
+                    "raw_data": order_data
+                }
+            )
+
+            with get_db() as db:
+                # First try to find existing order
+                order = get_order_by_id(db, order_id)
+                
+                # If order not found and this is an OPEN status, create it
+                if not order and status == "NEW":
+                    self.logger.info(
+                        "Creating new order record",
+                        extra={
+                            "order_id": order_id,
+                            "side": side,
+                            "quantity": quantity
+                        }
+                    )
+                    order = create_order(
+                        db,
+                        order_id=order_id,
+                        symbol=TRADING_SYMBOL,
+                        side=side,
+                        quantity=quantity,
+                        price=price,
+                        status=OrderStatus.OPEN
+                    )
+                elif not order:
+                    self.logger.error(
+                        "Order not found and not in OPEN status",
+                        extra={
+                            "order_id": order_id,
+                            "status": status
+                        }
+                    )
+                    return
+                else:
+                    self.logger.debug(
+                        "Found matching order in database",
+                        extra={
+                            "order_id": order_id,
+                            "db_status": order.status,
+                            "db_side": order.side
+                        }
+                    )
+
+                # Handle filled BUY orders
+                if status == "FILLED" and side == "BUY":
+                    self.logger.info(
+                        "BUY order filled, preparing SELL order",
+                        extra={
+                            "order_id": order_id,
+                            "fill_quantity": filled_quantity,
+                            "fill_price": price
+                        }
+                    )
+
+                    # Check minimum quantity
+                    if filled_quantity < MIN_SELL_QUANTITY:
+                        self.logger.warning(
+                            "Not placing SELL - below minimum quantity",
+                            extra={
+                                "quantity": filled_quantity,
+                                "min_required": MIN_SELL_QUANTITY
+                            }
+                        )
+                        return
+
+                    # Calculate target sell price
+                    try:
+                        target_price = self.calculate_sell_price(price)
+                        self.logger.info(
+                            "Calculated SELL target price",
+                            extra={
+                                "buy_price": price,
+                                "target_price": target_price,
+                                "profit_margin": ((target_price / price) - 1) * 100
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "Failed to calculate sell price",
+                            error=str(e),
+                            buy_price=price
+                        )
+                        return
+
+                    # Place sell order
+                    try:
+                        sell_order = self.place_sell_order(
+                            symbol=order.symbol,
+                            quantity=filled_quantity,
+                            price=target_price,
+                            related_order_id=order_id
+                        )
+                        self.logger.info(
+                            "Successfully placed SELL order",
+                            extra={
+                                "sell_order_id": sell_order.order_id,
+                                "quantity": filled_quantity,
+                                "price": target_price,
+                                "related_buy_id": order_id
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "Failed to place SELL order",
+                            error=str(e),
+                            quantity=filled_quantity,
+                            price=target_price
+                        )
+
+                # Update order status in database
+                update_order(
+                    db,
+                    order_id,
+                    status=OrderStatus(status),
+                    filled_quantity=filled_quantity,
+                    average_price=price
+                )
+
+        except Exception as e:
+            self.logger.error(
+                "Error handling order update",
+                error=str(e),
+                order_data=order_data
+            )
+
+    def _handle_partial_fill(self, db, order: Order, update_data: Dict[str, Any]):
+        """Handle partial order fills."""
+        try:
+            filled_qty = float(update_data.get('executedQty', 0))
+            avg_price = float(update_data.get('avgPrice', 0))
+            
+            # Update order
+            update_order(
+                db,
+                order.binance_order_id,
+                status=OrderStatus.PARTIALLY_FILLED,
+                filled_quantity=filled_qty,
+                average_price=avg_price
+            )
+            
+            # Create independent trade for filled portion
+            if order.side == 'BUY':
+                self._create_partial_buy_trade(db, order, filled_qty, avg_price)
+                
+        except Exception as e:
+            logger.error("Error handling partial fill", error=str(e))
+    
+    def _handle_complete_fill(self, db, order: Order, update_data: Dict[str, Any]):
+        """Handle complete order fills."""
+        try:
+            filled_qty = float(update_data.get('executedQty', 0))
+            avg_price = float(update_data.get('avgPrice', 0))
+            
+            # Update order
+            update_order(
+                db,
+                order.binance_order_id,
+                status=OrderStatus.FILLED,
+                filled_quantity=filled_qty,
+                average_price=avg_price
+            )
+            
+            # If this is a buy order, calculate and place sell order
+            if order.side == 'BUY':
+                self._handle_buy_fill(db, order, filled_qty, avg_price)
+                
+        except Exception as e:
+            logger.error("Error handling complete fill", error=str(e))
+    
+    def _handle_order_termination(self, db, order: Order, status: str):
+        """Handle order cancellation, rejection, or expiration."""
+        try:
+            update_order(
+                db,
+                order.binance_order_id,
+                status=OrderStatus[status]
+            )
+        except Exception as e:
+            logger.error("Error handling order termination", error=str(e))
+
     def _generate_signature(self, params: Dict[str, Any]) -> str:
         """
         Generate signature for API request.
@@ -188,7 +447,7 @@ class OrderManager:
                 side='BUY',
                 quantity=quantity,
                 price=price or float(order_response['price']),
-                status=OrderStatus.NEW,
+                status=OrderStatus.OPEN,
                 order_type='LIMIT' if price else 'MARKET'
             )
             
@@ -304,7 +563,7 @@ class OrderManager:
                 side='SELL',
                 quantity=quantity,
                 price=min_sell_price,
-                status=OrderStatus.NEW,
+                status=OrderStatus.OPEN,
                 order_type='LIMIT',
                 related_order_id=buy_order_id
             )
@@ -616,60 +875,69 @@ class OrderManager:
     def _start_duration_monitoring(self) -> None:
         """Start the position duration monitoring thread."""
         self.duration_monitor_thread = threading.Thread(
-            target=self._monitor_position_durations,
+            target=self._monitor_positions,
             daemon=True
         )
         self.duration_monitor_thread.start()
         logger.info("Started position duration monitoring thread")
 
-    def _monitor_position_durations(self) -> None:
-        """
-        Monitor position durations and generate alerts.
-        Runs in a separate thread to avoid blocking the main thread.
-        """
-        while True:
+    def _monitor_positions(self) -> None:
+        """Monitor position durations and alert if threshold exceeded."""
+        while self.running:
             try:
-                positions = self.get_open_positions()
-                for position in positions:
-                    order_id = position['order_id']
-                    duration = position['duration_seconds']
-                    
-                    # Check if position exceeds duration threshold and hasn't alerted
-                    if (duration > POSITION_DURATION_ALERT_THRESHOLD and 
-                        order_id not in self.position_alerts):
-                        logger.warning(
-                            "Position duration alert",
-                            order_id=order_id,
-                            symbol=position['symbol'],
-                            duration_hours=duration / 3600,
-                            quantity=position['quantity'],
-                            price=position['price']
-                        )
-                        self.position_alerts.add(order_id)
-                
-                # Cleanup alerts for closed positions
-                open_order_ids = {p['order_id'] for p in positions}
-                self.position_alerts = self.position_alerts & open_order_ids
-                
-                # Add this to store state periodically
                 with get_db() as db:
+                    # Update system state with current monitoring status
                     update_system_state(
                         db,
-                        last_position_check=datetime.utcnow(),
-                        open_positions=len(self.get_open_positions()),
-                        oldest_position_age=max(
-                            p['duration_seconds'] 
-                            for p in self.get_open_positions()
-                        ) if self.get_open_positions() else 0
+                        websocket_status="MONITORING",
+                        last_error=None,
+                        reconnection_attempts=0
                     )
+                    
+                    # Check positions
+                    self._check_position_durations(db)
+                    
+                # Sleep for interval
+                time.sleep(POSITION_DURATION_CHECK_INTERVAL)
                 
             except Exception as e:
                 logger.error(
                     "Error in position duration monitoring",
                     error=str(e)
                 )
+
+    def _check_position_durations(self, db):
+        positions = self.get_open_positions()
+        for position in positions:
+            order_id = position['order_id']
+            duration = position['duration_seconds']
             
-            time.sleep(POSITION_DURATION_CHECK_INTERVAL)
+            # Check if position exceeds duration threshold and hasn't alerted
+            if (duration > POSITION_DURATION_ALERT_THRESHOLD and 
+                order_id not in self.position_alerts):
+                logger.warning(
+                    "Position duration alert",
+                    order_id=order_id,
+                    symbol=position['symbol'],
+                    duration_hours=duration / 3600,
+                    quantity=position['quantity'],
+                    price=position['price']
+                )
+                self.position_alerts.add(order_id)
+        
+        # Cleanup alerts for closed positions
+        open_order_ids = {p['order_id'] for p in positions}
+        self.position_alerts = self.position_alerts & open_order_ids
+        
+        # Add this to store state periodically
+        update_system_state(
+            db,
+            open_positions=len(self.get_open_positions()),
+            oldest_position_age=max(
+                p['duration_seconds'] 
+                for p in self.get_open_positions()
+            ) if self.get_open_positions() else 0
+        )
 
     def get_position_duration(self, order_id: str) -> Optional[float]:
         """
@@ -775,3 +1043,11 @@ class OrderManager:
     def _poll_orders_via_rest(self):
         # Implement REST API polling logic
         pass 
+
+    def _update_order_status(self, order_id: int, new_status: str) -> None:
+        """Update order status in database."""
+        with get_db() as db:
+            order = get_order_by_id(db, order_id)
+            if order:
+                order.status = OrderStatus[new_status].value
+                db.commit() 

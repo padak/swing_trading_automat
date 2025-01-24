@@ -20,10 +20,7 @@ from src.db.models import SystemState, SystemStatus
 logger = get_logger(__name__)
 
 class StateManager:
-    """
-    Manages system state persistence, recovery, and graceful shutdowns.
-    Tracks system-wide state and handles state transitions.
-    """
+    """Manages system state and handles state reconciliation."""
     
     def __init__(self, price_manager, order_manager):
         """
@@ -35,6 +32,7 @@ class StateManager:
         """
         self.price_manager = price_manager
         self.order_manager = order_manager
+        self.logger = get_logger(__name__)
         self.should_run = True
         self.state_check_interval = 60  # Check state every minute
         
@@ -47,66 +45,81 @@ class StateManager:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         atexit.register(self._cleanup)
     
-    def start(self) -> None:
-        """Start state monitoring and recovery."""
+    def start(self):
+        """Start the state manager and perform initial state reconciliation."""
         try:
-            # Recover state from database
-            self._recover_state()
+            self._reconcile_state()
+            self.logger.info("State Manager started - initial state reconciled")
+        except Exception as e:
+            self.logger.error(f"Failed to start state manager: {str(e)}")
+            raise
             
-            # Start monitoring
-            self.monitor_thread.start()
-            
-            logger.info("State manager started")
+    def stop(self) -> None:
+        """Stop the state manager and cleanup resources."""
+        self.logger.debug("StateManager stop initiated")
+        self.should_run = False
+        
+        try:
+            # Wait for any pending state updates to complete
+            if self.monitor_thread and self.monitor_thread.is_alive():
+                self.logger.debug("Waiting for state check thread to stop...")
+                self.monitor_thread.join(timeout=5)
+                if self.monitor_thread.is_alive():
+                    self.logger.warning("State check thread did not stop within timeout")
             
         except Exception as e:
-            logger.error(
-                "Failed to start state manager",
-                error=str(e)
-            )
-            raise
+            self.logger.error(f"Error during StateManager shutdown: {str(e)}")
+        finally:
+            self.logger.debug("StateManager stop completed")
+            self._cleanup()
     
-    def stop(self) -> None:
-        """Stop state monitoring gracefully."""
-        self.should_run = False
-        if self.monitor_thread.is_alive():
-            self.monitor_thread.join()
-        self._cleanup()
-    
-    def _recover_state(self) -> None:
-        """Recover system state from database."""
+    def update_state(self, websocket_status: str = None, last_error: str = None) -> None:
+        """
+        Update system state in database.
+        
+        Args:
+            websocket_status: Current WebSocket connection status
+            last_error: Last error message if any
+        """
         try:
             with get_db() as db:
-                state = get_system_state(db)
-                if not state:
-                    logger.info("No previous state found, starting fresh")
-                    return
-                
-                # Update system status
                 update_system_state(
                     db,
-                    status=SystemStatus.STARTING,
-                    last_state_check=datetime.utcnow()
+                    websocket_status=websocket_status,
+                    last_error=last_error,
+                    reconnection_attempts=0 if websocket_status == "CONNECTED" else None
                 )
+        except Exception as e:
+            self.logger.error(f"Failed to update system state: {str(e)}")
+            
+    def _reconcile_state(self) -> None:
+        """
+        Reconcile local state with Binance's state.
+        Loads system state from DB and cross-checks with Binance.
+        """
+        try:
+            with get_db() as db:
+                # Load current state
+                state = get_system_state(db)
+                self.logger.info("Loaded system state", 
+                               websocket_status=state.websocket_status,
+                               last_processed_time=state.last_processed_time)
                 
-                # Check for open orders
-                open_orders = get_open_orders(db)
-                if open_orders:
-                    logger.info(
-                        "Found open orders during recovery",
-                        count=len(open_orders)
-                    )
+                # TODO: Implement Binance state reconciliation
+                # 1. Fetch open orders from Binance
+                # 2. Compare with local DB state
+                # 3. Update any mismatches
                 
-                logger.info(
-                    "State recovered",
-                    previous_status=state.status,
-                    open_orders=len(open_orders)
+                # For now, just mark as initializing
+                update_system_state(
+                    db,
+                    websocket_status="INITIALIZING",
+                    last_error=None,
+                    reconnection_attempts=0
                 )
                 
         except Exception as e:
-            logger.error(
-                "Failed to recover state",
-                error=str(e)
-            )
+            self.logger.error(f"Failed to reconcile state: {str(e)}")
             raise
     
     def _monitor_state(self) -> None:
@@ -118,11 +131,9 @@ class StateManager:
                 with get_db() as db:
                     update_system_state(
                         db,
-                        status=current_state['status'],
                         websocket_status=current_state['websocket_status'],
-                        last_price_update=current_state['last_price_update'],
-                        last_state_check=datetime.utcnow(),
-                        open_orders=current_state['open_orders']
+                        last_error=None,
+                        reconnection_attempts=0 if current_state['websocket_status'] == "CONNECTED" else None
                     )
                 
                 # Sleep for interval
@@ -132,7 +143,7 @@ class StateManager:
                     threading.Event().wait(1)
                     
             except Exception as e:
-                logger.error(
+                self.logger.error(
                     "State monitoring error",
                     error=str(e)
                 )
@@ -187,14 +198,15 @@ class StateManager:
             with get_db() as db:
                 update_system_state(
                     db,
-                    status=SystemStatus.STOPPED,
-                    last_state_check=datetime.utcnow()
+                    websocket_status="STOPPED",
+                    last_error=None,
+                    reconnection_attempts=0
                 )
             
-            logger.info("System state persisted for shutdown")
+            self.logger.info("System state persisted for shutdown")
             
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 "Failed to persist shutdown state",
                 error=str(e)
             )
