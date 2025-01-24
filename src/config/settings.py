@@ -26,6 +26,8 @@ MIN_PROFIT_PERCENTAGE: float = float(os.getenv("MIN_PROFIT_PERCENTAGE", "0.3"))
 MAX_SELL_VALUE_USDC: float = float(os.getenv("MAX_SELL_VALUE_USDC", "100"))
 MAX_ORDER_USDC: float = float(os.getenv("MAX_ORDER_USDC", "100"))  # Maximum order size in USDC
 POSITION_AGE_ALERT_HOURS: int = int(os.getenv("POSITION_AGE_ALERT_HOURS", "10"))
+POSITION_DURATION_ALERT_THRESHOLD: int = POSITION_AGE_ALERT_HOURS * 3600  # Convert hours to seconds
+POSITION_DURATION_CHECK_INTERVAL: int = int(os.getenv("POSITION_DURATION_CHECK_INTERVAL", "300"))  # Check every 5 minutes
 
 # System Configuration
 DB_PATH: Path = Path(os.getenv("DB_PATH", "data/trading.db"))
