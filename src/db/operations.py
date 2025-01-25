@@ -398,7 +398,12 @@ def update_system_state(
     db: Session,
     websocket_status: Optional[str] = None,
     last_error: Optional[str] = None,
-    reconnection_attempts: Optional[int] = None
+    last_order_update: Optional[datetime] = None,
+    last_status_change: Optional[str] = None,
+    order_id: Optional[str] = None,
+    reconnection_attempts: Optional[int] = None,
+    open_positions: Optional[int] = None,
+    oldest_position_age: Optional[float] = None
 ) -> SystemState:
     """
     Update the system state according to design specification.
@@ -407,28 +412,72 @@ def update_system_state(
         db: Database session
         websocket_status: Current WebSocket connection status
         last_error: Last error message if any
+        last_order_update: Timestamp of last order update
+        last_status_change: Last order status change
+        order_id: ID of the order being updated
         reconnection_attempts: Number of reconnection attempts
+        open_positions: Number of open positions
+        oldest_position_age: Age of oldest position in seconds
         
     Returns:
         SystemState: Updated system state
     """
     state = get_system_state(db)
     
+    # Keep track of old values to detect true changes
+    old_values = {
+        'websocket_status': state.websocket_status,
+        'last_error': state.last_error,
+        'last_order_update': state.last_order_update,
+        'last_status_change': state.last_status_change,
+        'last_order_id': state.last_order_id,
+        'reconnection_attempts': state.reconnection_attempts,
+        'open_positions': state.open_positions,
+        'oldest_position_age': state.oldest_position_age,
+    }
+
     if websocket_status is not None:
         state.websocket_status = websocket_status
-        
     if last_error is not None:
         state.last_error = last_error
-        
+    if last_order_update is not None:
+        state.last_order_update = last_order_update
+    if last_status_change is not None:
+        state.last_status_change = last_status_change
+    if order_id is not None:
+        state.last_order_id = order_id
     if reconnection_attempts is not None:
         state.reconnection_attempts = reconnection_attempts
-        
+    if open_positions is not None:
+        state.open_positions = open_positions
+    if oldest_position_age is not None:
+        state.oldest_position_age = oldest_position_age
+
     state.last_processed_time = datetime.utcnow()
-    
-    logger.info(
-        "Updated system state",
-        websocket_status=websocket_status,
-        reconnection_attempts=reconnection_attempts
+
+    # Compare old vs new to see if anything changed
+    changed = (
+        state.websocket_status != old_values['websocket_status'] or
+        state.last_error != old_values['last_error'] or
+        state.last_order_update != old_values['last_order_update'] or
+        state.last_status_change != old_values['last_status_change'] or
+        state.last_order_id != old_values['last_order_id'] or
+        state.reconnection_attempts != old_values['reconnection_attempts'] or
+        state.open_positions != old_values['open_positions'] or
+        state.oldest_position_age != old_values['oldest_position_age']
     )
-    
+
+    if changed:
+        logger.info(
+            "Updated system state",
+            websocket_status=state.websocket_status,
+            last_error=state.last_error,
+            last_order_update=state.last_order_update.isoformat() if state.last_order_update else None,
+            last_status_change=state.last_status_change,
+            order_id=state.last_order_id,
+            reconnection_attempts=state.reconnection_attempts,
+            open_positions=state.open_positions,
+            oldest_position_age=state.oldest_position_age
+        )
+
     return state 

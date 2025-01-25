@@ -98,19 +98,24 @@ class TradePair(Base):
         return f"<TradePair(id={self.id}, status={self.status})>"
 
 class SystemState(Base):
-    """Model for tracking system state and recovery information."""
-    __tablename__ = "system_state"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    last_processed_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    websocket_status: Mapped[str] = mapped_column(String(20), nullable=True)
-    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_reconciliation_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    reconnection_attempts: Mapped[int] = mapped_column(Integer, default=0)
-
-    def __repr__(self) -> str:
-        return f"<SystemState(id={self.id}, websocket_status={self.websocket_status})>"
+    """System state tracking according to design specification."""
+    __tablename__ = 'system_state'
+    
+    id = Column(Integer, primary_key=True)
+    websocket_status = Column(String, nullable=True)
+    last_error = Column(String, nullable=True)
+    last_order_update = Column(DateTime, nullable=True)
+    last_status_change = Column(String, nullable=True)
+    last_order_id = Column(String, nullable=True)
+    reconnection_attempts = Column(Integer, default=0)
+    open_positions = Column(Integer, default=0)
+    oldest_position_age = Column(Float, nullable=True)
+    last_processed_time = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<SystemState(websocket_status={self.websocket_status}, last_processed_time={self.last_processed_time})>"
 
 # Database initialization function
 def init_db() -> None:

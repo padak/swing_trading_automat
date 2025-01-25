@@ -9,6 +9,7 @@ from typing import Dict, Any
 
 import structlog
 from structlog.types import Processor
+from structlog.stdlib import LoggerFactory
 
 from .settings import (
     LOG_PATH,
@@ -19,9 +20,39 @@ from .settings import (
 )
 
 def setup_logging() -> None:
-    """Configure the logging system with both file and console outputs."""
+    """Configure the logging system with structured logging and file rotation."""
     
-    # Set up standard logging
+    # Set timestamp format for all loggers
+    structlog.configure(
+        processors=[
+            # Add timestamps to all log entries
+            structlog.processors.TimeStamper(fmt="iso"),
+            # Add log level
+            structlog.stdlib.add_log_level,
+            # Add caller info
+            structlog.processors.CallsiteParameterAdder(
+                [
+                    structlog.processors.CallsiteParameter.FILENAME,
+                    structlog.processors.CallsiteParameter.FUNC_NAME,
+                    structlog.processors.CallsiteParameter.LINENO,
+                ]
+            ),
+            # If log level is ERROR, add stack info
+            structlog.processors.StackInfoRenderer(),
+            # Format any exceptions
+            structlog.processors.format_exc_info,
+            # Ensure all strings are unicode
+            structlog.processors.UnicodeDecoder(),
+            # Convert to JSON format
+            structlog.processors.JSONRenderer()
+        ],
+        context_class=dict,
+        logger_factory=LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    
+    # Configure standard logging
     logging.basicConfig(
         format="%(message)s",
         level=getattr(logging, LOG_LEVEL.upper())
@@ -41,40 +72,30 @@ def setup_logging() -> None:
     )
     error_handler.setLevel(logging.ERROR)
     
-    # Configure structlog processors
-    processors: list[Processor] = [
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.stdlib.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
-    ]
-    
-    structlog.configure(
-        processors=processors,
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
-    )
-    
     # Get the root logger and add handlers
     root_logger = logging.getLogger()
     root_logger.addHandler(main_handler)
     root_logger.addHandler(error_handler)
 
-def get_logger(name: str) -> structlog.BoundLogger:
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """
-    Get a logger instance with the given name.
+    Get a structured logger instance with the given name.
     
     Args:
         name: The name of the logger (usually __name__ of the module)
         
     Returns:
-        structlog.BoundLogger: A configured logger instance
+        structlog.stdlib.BoundLogger: A configured structured logger instance
+        
+    Example:
+        >>> logger = get_logger(__name__)
+        >>> logger.info("Processing order", order_id="123", amount=100)
+        >>> logger.error("Order failed", order_id="123", error="Insufficient funds")
     """
     return structlog.get_logger(name)
+
+# Initialize logging on module import
+setup_logging()
 
 # Example usage:
 # logger = get_logger(__name__)

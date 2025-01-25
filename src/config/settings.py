@@ -1,10 +1,14 @@
 """
-Configuration settings for the trading system.
-Loads and validates environment variables.
+Configuration settings for the Binance Swing Trading Automation.
+
+This module contains all configurable values used across the application,
+ensuring consistency between local development and production environments.
+Values can be overridden via environment variables.
 """
+
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Final
 
 from dotenv import load_dotenv
 
@@ -55,6 +59,58 @@ CONCURRENT_UPDATES_THRESHOLD: int = int(os.getenv("CONCURRENT_UPDATES_THRESHOLD"
 # Logging Configuration
 LOG_ROTATION_SIZE_MB: int = int(os.getenv("LOG_ROTATION_SIZE_MB", "100"))
 LOG_BACKUP_COUNT: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))
+
+# Component Shutdown Timeouts (in seconds)
+# ---------------------------------------
+# These values determine how long we wait for each component to shut down
+# before considering it failed. Order is important as components are shut down
+# in reverse dependency order.
+
+SHUTDOWN_TIMEOUT_ORDER: Final[float] = float(os.getenv('SHUTDOWN_TIMEOUT_ORDER', '1.0'))
+SHUTDOWN_TIMEOUT_PRICE: Final[float] = float(os.getenv('SHUTDOWN_TIMEOUT_PRICE', '1.0'))
+SHUTDOWN_TIMEOUT_STATE: Final[float] = float(os.getenv('SHUTDOWN_TIMEOUT_STATE', '2.0'))
+THREAD_SHUTDOWN_TIMEOUT: Final[float] = float(os.getenv('THREAD_SHUTDOWN_TIMEOUT', '5.0'))
+THREAD_TIMEOUT: Final[float] = float(os.getenv('THREAD_TIMEOUT', '180.0'))  # 3 minutes before thread considered stale
+
+# Monitoring Intervals (in seconds)
+# -------------------------------
+# These values control how frequently different monitoring operations occur.
+# Shorter intervals mean faster response but more CPU usage.
+
+MONITOR_LOOP_INTERVAL: Final[float] = float(os.getenv('MONITOR_LOOP_INTERVAL', '0.1'))
+POSITION_CHECK_INTERVAL: Final[float] = float(os.getenv('POSITION_CHECK_INTERVAL', '0.1'))
+PRICE_UPDATE_INTERVAL: Final[float] = float(os.getenv('PRICE_UPDATE_INTERVAL', '0.1'))
+STATE_RECONCILE_INTERVAL: Final[float] = float(os.getenv('STATE_RECONCILE_INTERVAL', '0.1'))
+
+# WebSocket Settings
+# ----------------
+# Configuration for WebSocket connections and reconnection behavior
+
+WEBSOCKET_CLOSE_TIMEOUT: Final[float] = float(os.getenv('WEBSOCKET_CLOSE_TIMEOUT', '1.0'))
+
+# Database Settings
+# ---------------
+# Configuration for database operations and connection pool
+
+DB_POOL_SIZE: Final[int] = int(os.getenv('DB_POOL_SIZE', '5'))
+DB_POOL_TIMEOUT: Final[float] = float(os.getenv('DB_POOL_TIMEOUT', '2.0'))
+DB_TRANSACTION_TIMEOUT: Final[float] = float(os.getenv('DB_TRANSACTION_TIMEOUT', '1.0'))
+
+# Trading Settings
+# --------------
+# Configuration for order placement and management
+
+MIN_ORDER_QUANTITY: Final[float] = float(os.getenv('MIN_ORDER_QUANTITY', '0.01'))
+PROFIT_MARGIN: Final[float] = float(os.getenv('PROFIT_MARGIN', '0.02'))  # 2%
+MAX_POSITION_DURATION: Final[int] = int(os.getenv('MAX_POSITION_DURATION', '86400'))  # 24 hours
+ORDER_CHECK_INTERVAL: Final[float] = float(os.getenv('ORDER_CHECK_INTERVAL', '10.0'))  # Fallback REST polling interval when WebSocket is down
+
+# API Settings
+# ----------
+# Configuration for API endpoints and timeouts
+
+API_REQUEST_TIMEOUT: Final[float] = float(os.getenv('API_REQUEST_TIMEOUT', '5.0'))
+API_KEEPALIVE_TIMEOUT: Final[float] = float(os.getenv('API_KEEPALIVE_TIMEOUT', '30.0'))
 
 def validate_config() -> Optional[str]:
     """
@@ -107,4 +163,28 @@ def validate_config() -> Optional[str]:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     
-    return None 
+    return None
+
+def validate_settings():
+    """Validate that all settings are within acceptable ranges."""
+    assert 0 < SHUTDOWN_TIMEOUT_ORDER <= 5, "Shutdown timeout must be between 0 and 5 seconds"
+    assert 0 < SHUTDOWN_TIMEOUT_PRICE <= 5, "Shutdown timeout must be between 0 and 5 seconds"
+    assert 0 < SHUTDOWN_TIMEOUT_STATE <= 5, "Shutdown timeout must be between 0 and 5 seconds"
+    assert 0 < THREAD_SHUTDOWN_TIMEOUT <= 10, "Thread shutdown timeout must be between 0 and 10 seconds"
+    assert 60 <= THREAD_TIMEOUT <= 300, "Thread timeout must be between 1 and 5 minutes"
+    
+    assert 0 < MONITOR_LOOP_INTERVAL <= 1, "Monitor interval must be between 0 and 1 second"
+    assert 0 < POSITION_CHECK_INTERVAL <= 1, "Position check interval must be between 0 and 1 second"
+    assert 0 < PRICE_UPDATE_INTERVAL <= 1, "Price update interval must be between 0 and 1 second"
+    assert 0 < STATE_RECONCILE_INTERVAL <= 1, "State reconcile interval must be between 0 and 1 second"
+    assert ORDER_CHECK_INTERVAL >= 10, "Order check interval must be at least 10 seconds when in fallback mode"
+    
+    assert 0 < DB_POOL_SIZE <= 10, "DB pool size must be between 1 and 10"
+    assert DB_POOL_TIMEOUT > 0, "DB pool timeout must be positive"
+    
+    assert MIN_ORDER_QUANTITY > 0, "Minimum order quantity must be positive"
+    assert 0 < PROFIT_MARGIN < 1, "Profit margin must be between 0 and 1"
+    assert MAX_POSITION_DURATION > 0, "Maximum position duration must be positive"
+
+# Validate settings on module import
+validate_settings() 

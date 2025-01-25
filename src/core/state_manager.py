@@ -73,13 +73,29 @@ class StateManager:
             self.logger.debug("StateManager stop completed")
             self._cleanup()
     
-    def update_state(self, websocket_status: str = None, last_error: str = None) -> None:
+    def update_state(
+        self,
+        websocket_status: Optional[str] = None,
+        last_error: Optional[str] = None,
+        last_order_update: Optional[datetime] = None,
+        last_status_change: Optional[str] = None,
+        order_id: Optional[str] = None,
+        reconnection_attempts: Optional[int] = None,
+        open_positions: Optional[int] = None,
+        oldest_position_age: Optional[float] = None
+    ) -> None:
         """
         Update system state in database.
         
         Args:
             websocket_status: Current WebSocket connection status
             last_error: Last error message if any
+            last_order_update: Timestamp of last order update
+            last_status_change: Last order status change
+            order_id: ID of the order being updated
+            reconnection_attempts: Number of WebSocket reconnection attempts
+            open_positions: Number of open positions
+            oldest_position_age: Age of oldest position in seconds
         """
         try:
             with get_db() as db:
@@ -87,7 +103,12 @@ class StateManager:
                     db,
                     websocket_status=websocket_status,
                     last_error=last_error,
-                    reconnection_attempts=0 if websocket_status == "CONNECTED" else None
+                    last_order_update=last_order_update,
+                    last_status_change=last_status_change,
+                    order_id=order_id,
+                    reconnection_attempts=reconnection_attempts,
+                    open_positions=open_positions,
+                    oldest_position_age=oldest_position_age
                 )
         except Exception as e:
             self.logger.error(f"Failed to update system state: {str(e)}")
